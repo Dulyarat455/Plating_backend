@@ -1,0 +1,120 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+
+model User {
+  id Int @id() @default(autoincrement())
+  name String
+  role String
+  empNo String
+  password String
+  rfId String
+  status String @default("use")
+}
+
+model Group{
+  id Int @id() @default(autoincrement())
+  name String
+  status String @default("use")
+  MapGroupSection MapGroupSection[]
+}
+
+
+model Section{
+  id Int @id() @default(autoincrement())
+  name String
+  status String @default("use")
+  MapGroupSection MapGroupSection[]
+}
+
+
+model MapGroupSection{
+  id Int @id() @default(autoincrement())
+  groupId Int 
+  sectionId Int
+  status String @default("use")
+  Section Section  @relation(fields: [sectionId], references: [id])
+  Group Group  @relation(fields: [groupId], references: [id])
+}
+
+model Box {
+  id Int @id() @default(autoincrement())
+  platMasterId Int
+  sentDate DateTime @default(now())
+  sentByUserId Int 
+  receiveDate DateTime
+  receiveByUserId Int
+  qty Int  
+  venderId Int 
+  status String @default("use")
+  PlatingMaster PlatingMaster @relation(fields: [platMasterId], references: [id])
+}
+
+model BoxHeader{
+  id Int @id() @default(autoincrement())
+  sentDate DateTime @default(now())
+  shift  String
+  status String @default("use")
+}
+
+model PlatingMaster {
+  id Int @id() @default(autoincrement())
+  wosNo String
+  itemNo String
+  itemName String
+  spec String
+  dwg String
+  dieNo String
+  status String @default("use")
+}
+
+
+model Vendor {
+  id Int @id() @default(autoincrement())
+  name String
+  status String @default("use")
+}
+
+model ControlLot {
+  id Int @id() @default(autoincrement())
+  name String
+  status String @default("use")
+}
+
+
+model HeaderTemp {
+  id Int @id() @default(autoincrement())
+  sentDate DateTime @default(now())
+  receiveDate DateTime @default(now())
+  groupId Int
+  lotState String
+  shift String
+  venderId Int
+  controlLotId Int
+  itemNo String
+  itemName String
+  qtyBox Int
+  status String @default("use")
+  Group Group @relation(fields: [groupId], references: [id])
+  Vendor Vendor @relation(fields: [venderId],references: [id])
+  ControlLot ControlLot @relation(fields: [controlLotId],references: [id])
+}
+
+
+
+
+
+
