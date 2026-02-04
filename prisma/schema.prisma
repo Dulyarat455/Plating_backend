@@ -5,9 +5,10 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../generated/prisma"
 }
+
 
 datasource db {
   provider = "sqlserver"
@@ -23,6 +24,11 @@ model User {
   password String
   rfId String
   status String @default("use")
+  MapGroupSection MapGroupSection[]
+  HeaderIssue HeaderIssue[]
+  HeaderIssueTemp HeaderIssueTemp[]
+  HeaderReceive HeaderReceive[]
+  HeaderReceiveTemp HeaderReceiveTemp[]
 }
 
 model Group{
@@ -30,7 +36,13 @@ model Group{
   name String
   status String @default("use")
   MapGroupSection MapGroupSection[]
+  PartMaster PartMaster[]
+  HeaderIssue HeaderIssue[]
+  HeaderIssueTemp HeaderIssueTemp[]
+  HeaderReceive HeaderReceive[]
+  HeaderReceiveTemp HeaderReceiveTemp[]
 }
+
 
 
 model Section{
@@ -41,44 +53,16 @@ model Section{
 }
 
 
+
 model MapGroupSection{
   id Int @id() @default(autoincrement())
   groupId Int 
   sectionId Int
+  userId Int
   status String @default("use")
   Section Section  @relation(fields: [sectionId], references: [id])
   Group Group  @relation(fields: [groupId], references: [id])
-}
-
-model Box {
-  id Int @id() @default(autoincrement())
-  platMasterId Int
-  sentDate DateTime @default(now())
-  sentByUserId Int 
-  receiveDate DateTime
-  receiveByUserId Int
-  qty Int  
-  venderId Int 
-  status String @default("use")
-  PlatingMaster PlatingMaster @relation(fields: [platMasterId], references: [id])
-}
-
-model BoxHeader{
-  id Int @id() @default(autoincrement())
-  sentDate DateTime @default(now())
-  shift  String
-  status String @default("use")
-}
-
-model PlatingMaster {
-  id Int @id() @default(autoincrement())
-  wosNo String
-  itemNo String
-  itemName String
-  spec String
-  dwg String
-  dieNo String
-  status String @default("use")
+  User User  @relation(fields: [userId], references: [id])
 }
 
 
@@ -86,21 +70,64 @@ model Vendor {
   id Int @id() @default(autoincrement())
   name String
   status String @default("use")
+  HeaderIssueTemp HeaderIssueTemp[]
+  HeaderReceiveTemp HeaderReceiveTemp[]
+
 }
 
 model ControlLot {
   id Int @id() @default(autoincrement())
   name String
   status String @default("use")
+  HeaderIssueTemp HeaderIssueTemp[]
+  HeaderReceiveTemp HeaderReceiveTemp[]
+
 }
 
 
-model HeaderTemp {
+model PartMaster {
   id Int @id() @default(autoincrement())
-  sentDate DateTime @default(now())
-  receiveDate DateTime @default(now())
+  itemNo String
+  itemName String
+  dwg String?
+  dieNo String?
+  qty Int?
   groupId Int
+  createdAt DateTime @default(now())
+  status String @default("use")
+  Group Group @relation(fields: [groupId], references: [id])
+} 
+
+
+
+model HeaderIssue{
+  id Int @id() @default(autoincrement()) 
+  issueLotNo String
+  sentDate DateTime @default(now())
+  userId Int
+  groupId Int
+  shift String
+  vender String
+  controlLot String
+  itemNo String
+  itemName String
+  qtyBox Int
+  qtySum Int
   lotState String
+  status String @default("use")
+  Group Group @relation(fields: [groupId], references: [id])
+  User User @relation(fields: [userId],references: [id])
+  Box Box[]
+  
+}
+
+
+model HeaderIssueTemp{
+  id Int @id() @default(autoincrement()) 
+  sentDate DateTime @default(now())
+  sentDateByUser DateTime
+  userId Int
+  groupId Int
   shift String
   venderId Int
   controlLotId Int
@@ -111,7 +138,96 @@ model HeaderTemp {
   Group Group @relation(fields: [groupId], references: [id])
   Vendor Vendor @relation(fields: [venderId],references: [id])
   ControlLot ControlLot @relation(fields: [controlLotId],references: [id])
+  User User @relation(fields: [userId], references: [id])
+  BoxIssueTemp BoxIssueTemp[]
 }
+
+
+model HeaderReceive{
+  id Int @id() @default(autoincrement()) 
+  receiveLotNo String
+  receiveDate DateTime @default(now())
+  userId Int
+  groupId Int
+  shift String
+  vender String
+  controlLot String
+  itemNo String
+  itemName String
+  qtyBox Int
+  qtySum Int 
+  lotState String
+  status String @default("use")
+  Group Group @relation(fields: [groupId], references: [id])
+  User User @relation(fields: [userId], references: [id])
+}
+
+
+model HeaderReceiveTemp{
+  id Int @id() @default(autoincrement()) 
+  receiveDate DateTime @default(now())
+  userId Int
+  groupId Int
+  shift String
+  venderId Int
+  controlLotId Int
+  itemNo String
+  itemName String
+  qtyBox Int 
+  status String @default("use")
+  Group Group @relation(fields: [groupId], references: [id])
+  Vendor Vendor @relation(fields: [venderId], references: [id])
+  ControlLot ControlLot @relation(fields: [controlLotId],references: [id])
+  User User @relation(fields: [userId], references: [id])
+  BoxReceiveTemp BoxReceiveTemp[]
+}
+
+
+model Box {
+  id Int @id() @default(autoincrement())
+  issueId Int
+  receiveId Int?
+  itemNo String
+  itemName String
+  wosNo String
+  dwg String? 
+  dieNo String
+  qty Int  
+  BoxState  String 
+  status String @default("use")
+  HeaderIssue HeaderIssue @relation(fields: [issueId], references: [id])
+}
+
+model BoxIssueTemp{
+  id Int @id() @default(autoincrement())
+  headerId Int
+  itemNo String
+  itemName String
+  wosNo String
+  dwg String?
+  dieNo String
+  qty Int  
+  status String @default("use")
+  HeaderIssueTemp HeaderIssueTemp @relation(fields: [headerId], references: [id])
+}
+
+model BoxReceiveTemp{
+  id Int @id() @default(autoincrement())
+  headerId Int
+  itemNo String
+  itemName String
+  wosNo String
+  dwg String?
+  dieNo String
+  lotNo String
+  qty Int  
+  status String @default("use")
+  HeaderReceiveTemp HeaderReceiveTemp @relation(fields: [headerId], references: [id])
+}
+
+
+
+
 
 
 
