@@ -104,6 +104,7 @@ model HeaderIssue{
   id Int @id() @default(autoincrement()) 
   issueLotNo String
   sentDate DateTime @default(now())
+  sentDateByUser DateTime
   userId Int
   groupId Int
   shift String
@@ -147,6 +148,7 @@ model HeaderReceive{
   id Int @id() @default(autoincrement()) 
   receiveLotNo String
   receiveDate DateTime @default(now())
+  receiveDateByUser DateTime
   userId Int
   groupId Int
   shift String
@@ -166,6 +168,7 @@ model HeaderReceive{
 model HeaderReceiveTemp{
   id Int @id() @default(autoincrement()) 
   receiveDate DateTime @default(now())
+  receiveDateByUser DateTime
   userId Int
   groupId Int
   shift String
@@ -192,6 +195,7 @@ model Box {
   wosNo String
   dwg String? 
   dieNo String
+  lotNo String
   qty Int  
   BoxState  String 
   status String @default("use")
@@ -206,6 +210,7 @@ model BoxIssueTemp{
   wosNo String
   dwg String?
   dieNo String
+  lotNo String
   qty Int  
   status String @default("use")
   HeaderIssueTemp HeaderIssueTemp @relation(fields: [headerId], references: [id])

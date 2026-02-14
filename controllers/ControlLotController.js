@@ -52,7 +52,7 @@ module.exports = {
       try{
           const rows = await prisma.controlLot.findMany({
               where: {
-                  State: 'use'
+                status: 'use'
               }
           })
           return res.send({ results: rows })

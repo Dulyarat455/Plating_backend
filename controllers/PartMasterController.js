@@ -67,7 +67,7 @@ module.exports = {
 
           const rows = await prisma.partMaster.findMany({
               where: {
-                  State: 'use',
+                  status: 'use',
                   groupId: parseInt(groupId)
               },
               select:{
@@ -84,6 +84,11 @@ module.exports = {
           return res.status(500).send({ error: e.message });
       }
     }, 
+
+
+
+
+    
 
     edit: async (req,res) => {
         try{

@@ -22,6 +22,7 @@ const partMasterController = require("./controllers/PartMasterController");
 const controlLotController = require("./controllers/ControlLotController");
 const vendorController = require("./controllers/VendorController");
 const issueController = require("./controllers/IssueController");
+const receiveController = require("./controllers/ReceiveController")
 
 
 //user
@@ -53,9 +54,36 @@ app.get('/api/controlLot/list',(req, res)=> controlLotController.list(req,res));
 app.post('/api/vendor/create',(req, res)=> vendorController.add(req,res));
 app.get('/api/vendor/list', (req, res)=> vendorController.list(req,res));
 
+
 //issue 
 app.post('/api/issue/createHeaderTemp',(req, res)=> issueController.createHeaderTemp(req,res));
 app.post('/api/issue/fetchHeaderTempByUser',(req, res)=> issueController.fetchHeaderTemp(req,res));
+app.post('/api/issue/updateHeaderTemp',(req, res)=> issueController.editHeaderTemp(req,res));
+app.post('/api/issue/createBoxTemp',(req, res)=> issueController.createBoxTemp(req,res));
+app.post('/api/issue/fetchBoxTempByHeadId',(req, res)=> issueController.fetchBoxTempByHeadId(req,res));
+app.post('/api/issue/deleteBoxTemp',(req, res)=> issueController.deleteBoxTemp(req,res));
+app.put('/api/issue/updateBoxTemp',(req, res)=> issueController.editBoxTemp(req,res));
+app.post('/api/issue/deleteBoxTempAll',(req, res)=> issueController.deleteBoxTempAll(req, res));
+app.post('/api/issue/deleteHeaderBoxTemp',(req,res)=> issueController.deleteHeaderBoxTemp(req, res));
+
+app.post('/api/issue/createHeaderBox',(req, res)=> issueController.createHeaderBox(req,res));
+app.get('/api/issue/list',(req, res)=> issueController.list(req,res));
+
+
+
+//Receive
+app.post('/api/receive/createHeaderTemp',(req, res) => receiveController.createHeaderTemp(req,res));
+app.post('/api/receive/fetchHeaderTempByUser',(req, res)=> receiveController.fetchHeaderTemp(req,res));
+app.post('/api/receive/updateHeaderTemp',(req, res)=> receiveController.editHeaderTemp(req,res));
+app.post('/api/receive/createBoxTemp',(req, res)=> receiveController.createBoxTemp(req,res));
+app.post('/api/receive/fetchBoxTempByHeadId',(req, res)=> receiveController.fetchBoxTempByHeadId(req,res));
+app.post('/api/receive/deleteBoxTemp',(req, res)=> receiveController.deleteBoxTemp(req,res));
+app.put('/api/receive/updateBoxTemp',(req,res)=> receiveController.editBoxTemp(req,res));
+app.post('/api/receive/deleteBoxTempAll',(req,res)=> receiveController.deleteBoxTempAll(req,res));
+app.post('/api/receive/deleteHeaderBoxTemp',(req, res)=> receiveController.deleteHeaderBoxTemp(req,res));
+
+app.post('/api/receive/createHeaderBox',(req,res)=> receiveController.createHeaderBox(req,res));
+
 
 
 

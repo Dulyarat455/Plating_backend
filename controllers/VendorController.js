@@ -54,7 +54,7 @@ module.exports = {
       try{
           const rows = await prisma.vendor.findMany({
               where: {
-                  State: 'use'
+                status: 'use'
               }
           })
           return res.send({ results: rows })
