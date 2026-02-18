@@ -1,0 +1,22 @@
+BEGIN TRY
+
+BEGIN TRAN;
+
+-- DropForeignKey
+ALTER TABLE [dbo].[PartMaster] DROP CONSTRAINT [PartMaster_groupId_fkey];
+
+-- AlterTable
+ALTER TABLE [dbo].[PartMaster] ALTER COLUMN [groupId] INT NULL;
+
+COMMIT TRAN;
+
+END TRY
+BEGIN CATCH
+
+IF @@TRANCOUNT > 0
+BEGIN
+    ROLLBACK TRAN;
+END;
+THROW
+
+END CATCH

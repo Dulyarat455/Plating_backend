@@ -6,6 +6,8 @@ const bodyParser = require('body-parser');
 const cors = require("cors");
 const dotenv  = require("dotenv");
 
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
 
 dotenv.config();
@@ -28,22 +30,33 @@ const receiveController = require("./controllers/ReceiveController")
 //user
 app.post('/api/user/create',(req, res)=> userController.create(req,res));
 app.post('/api/user/signIn',(req, res)=> userController.signin(req,res));
-app.post('/api/user/update',(req,res)=> userController.upadate(req,res));
+app.post('/api/user/update',(req, res)=> userController.upadate(req,res));
+app.get('/api/user/list', (req, res)=> userController.list(req,res));
 
 
 //section
 app.post('/api/section/create',(req, res)=> sectionController.add(req,res));
+app.get('/api/section/list',(req,res)=> sectionController.list(req,res));
 
 
 //group
 app.post('/api/group/create',(req, res)=> groupController.add(req,res));
+app.get('/api/group/list',(req,res)=> groupController.list(req,res));
+
 
 
 //part master
 app.post('/api/partMaster/create',(req, res)=> partMasterController.add(req,res));
 app.post('/api/partMaster/update',(req, res)=> partMasterController.edit(req,res));
-app.post('/api/partMaster/importExcel',(req, res)=> partMasterController.imporExcel(req,res));
 app.post('/api/partMaster/filterByGroup',(req, res)=> partMasterController.filterByGroup(req,res));
+app.get('/api/partMaster/list',(req, res)=> partMasterController.list(req,res));
+app.post('/api/partMaster/importExcel',upload.single('file'),(req ,res)=> partMasterController.importExcel(req,res));
+app.post('/api/partMaster/exportExcel', (req, res) => partMasterController.exportExcel(req, res));
+
+app.put('/api/partMaster/edit',(req, res)=> partMasterController.edit(req,res));
+app.post('/api/partMaster/delete',(req, res)=> partMasterController.delete(req,res));
+
+
 
 
 //controlLot 
@@ -83,6 +96,7 @@ app.post('/api/receive/deleteBoxTempAll',(req,res)=> receiveController.deleteBox
 app.post('/api/receive/deleteHeaderBoxTemp',(req, res)=> receiveController.deleteHeaderBoxTemp(req,res));
 
 app.post('/api/receive/createHeaderBox',(req,res)=> receiveController.createHeaderBox(req,res));
+app.get('/api/receive/list',(req, res)=> receiveController.list(req,res));
 
 
 

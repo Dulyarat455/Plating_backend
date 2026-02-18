@@ -489,11 +489,11 @@ createHeaderBox: async (req, res) => {
       });
 
       // 4) สร้าง Box จริง (ย้ายจาก temp)
-      // NOTE: lotNo ไม่มีใน Box schema => เก็บไว้ใน BoxState เพื่อไม่ให้หาย
+      
       for (const b of headerTemp.BoxReceiveTemp) {
         await tx.box.updateMany({
           where: {
-            receiveId: null,
+            receiveId: null, // เท่ากับว่า box นี้ยังไม่เคย receive มาก่อน
             status: "use",
       
             // ใช้ field เหล่านี้จับคู่
@@ -550,13 +550,13 @@ createHeaderBox: async (req, res) => {
 
 
 
+
 list: async (req, res) => {
   try {
-
     // =============================
-    // 1) ดึง HeaderIssue ก่อน
+    // 1) ดึง HeaderReceive ก่อน
     // =============================
-    const headers = await prisma.headerIssue.findMany({
+    const headers = await prisma.headerReceive.findMany({
       where: { status: 'use' },
       orderBy: { id: 'desc' },
       include: {
@@ -568,7 +568,7 @@ list: async (req, res) => {
     if (!headers.length) return res.send({ results: [] });
 
     // =============================
-    // 2) ดึง Box ทีหลัง (chunk 500)
+    // 2) ดึง Box ทีหลัง ด้วย receiveId (chunk 500)
     // =============================
     const headerIds = headers.map(h => h.id);
 
@@ -581,7 +581,7 @@ list: async (req, res) => {
       const boxes = await prisma.box.findMany({
         where: {
           status: 'use',
-          issueId: { in: chunk },
+          receiveId: { in: chunk }, // ✅ join แบบ manual เพราะไม่มี relation
         },
         orderBy: { id: 'asc' },
       });
@@ -590,29 +590,30 @@ list: async (req, res) => {
     }
 
     // =============================
-    // 3) group box ตาม issueId
+    // 3) group box ตาม receiveId
     // =============================
-    const boxByIssueId = new Map();
+    const boxByReceiveId = new Map();
 
     for (const b of allBoxes) {
-      const arr = boxByIssueId.get(b.issueId) || [];
+      const key = b.receiveId; // number | null
+      if (key == null) continue; // กันข้อมูล issue ที่ยังไม่ receive
+      const arr = boxByReceiveId.get(key) || [];
       arr.push(b);
-      boxByIssueId.set(b.issueId, arr);
+      boxByReceiveId.set(key, arr);
     }
 
     // =============================
     // 4) map output
     // =============================
     const results = headers.map(h => {
-
-      const boxes = boxByIssueId.get(h.id) || [];
+      const boxes = boxByReceiveId.get(h.id) || [];
 
       return {
         id: h.id,
-        issueLotNo: h.issueLotNo,
+        receiveLotNo: h.receiveLotNo,
 
-        sentDate: h.sentDate,
-        sentDateByUser: h.sentDateByUser,
+        receiveDate: h.receiveDate,
+        receiveDateByUser: h.receiveDateByUser,
 
         userId: h.userId,
         userName: h.User?.name ?? null,
@@ -633,13 +634,12 @@ list: async (req, res) => {
 
         lotState: h.lotState,
 
-        boxes,               // ✅ attach box list
+        boxes,                 // ✅ attach box list
         boxCount: boxes.length,
       };
     });
 
     return res.send({ results });
-
   } catch (e) {
     return res.status(500).send({ error: e.message });
   }

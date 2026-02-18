@@ -160,11 +160,197 @@ module.exports = {
           try{
 
           }catch(e) {
-            console.error(e);
+           
             return res.status(500).send({ error: e.message });
           }
 
       },
+
+
+      signInRfId: async (req, res) => {
+        try{
+
+        }catch(e){
+          return res.status(500).send({ error: e.message });
+        }
+
+      },
+
+
+
+
+      list: async (req, res) => {
+        try {
+          // =============================
+          // 1) Users + map group/section (เอาอันแรกสุดเป็นหลัก)
+          // =============================
+          const users = await prisma.user.findMany({
+            where: { status: 'use' },
+            orderBy: { id: 'asc' },
+            select: {
+              id: true,
+              empNo: true,
+              name: true,
+              role: true,
+              rfId: true,
+              password: true,
+              MapGroupSection: {
+                where: { status: 'use' },
+                orderBy: { id: 'asc' },
+                select: {
+                  groupId: true,
+                  sectionId: true,
+                  Group: { select: { name: true } },
+                  Section: { select: { name: true } },
+                }
+              }
+            }
+          });
+
+          if (!users.length) return res.send({ results: [] });
+
+          const userIds = users.map(u => u.id);
+          const chunkSize = 500;
+
+          // =============================
+          // 2) IssueTemp (chunk) + BoxIssueTemp (wosNo)
+          // =============================
+          const issueAll = [];
+          for (let i = 0; i < userIds.length; i += chunkSize) {
+            const chunk = userIds.slice(i, i + chunkSize);
+
+            const rows = await prisma.headerIssueTemp.findMany({
+              where: { status: 'use', userId: { in: chunk } },
+              orderBy: { id: 'desc' }, // ✅ ล่าสุดก่อน
+              select: {
+                id: true,
+                userId: true,
+                shift: true,
+                itemNo: true,
+                itemName: true,
+                sentDate: true,
+                Vendor: { select: { name: true } },
+                ControlLot: { select: { name: true } },
+                BoxIssueTemp: {
+                  where: { status: 'use' },
+                  select: { wosNo: true }
+                }
+              }
+            });
+
+            issueAll.push(...rows);
+          }
+
+          // group issue by userId
+          const issueByUserId = new Map();
+          for (const h of issueAll) {
+            const arr = issueByUserId.get(h.userId) || [];
+            arr.push(h);
+            issueByUserId.set(h.userId, arr);
+          }
+
+          // =============================
+          // 3) ReceiveTemp (chunk) + BoxReceiveTemp (wosNo)
+          // =============================
+          const receiveAll = [];
+          for (let i = 0; i < userIds.length; i += chunkSize) {
+            const chunk = userIds.slice(i, i + chunkSize);
+
+            const rows = await prisma.headerReceiveTemp.findMany({
+              where: { status: 'use', userId: { in: chunk } },
+              orderBy: { id: 'desc' }, // ✅ ล่าสุดก่อน
+              select: {
+                id: true,
+                userId: true,
+                shift: true,
+                itemNo: true,
+                itemName: true,
+                receiveDate: true,
+                Vendor: { select: { name: true } },
+                ControlLot: { select: { name: true } },
+                BoxReceiveTemp: {
+                  where: { status: 'use' },
+                  select: { wosNo: true }
+                }
+              }
+            });
+
+            receiveAll.push(...rows);
+          }
+
+          // group receive by userId
+          const receiveByUserId = new Map();
+          for (const h of receiveAll) {
+            const arr = receiveByUserId.get(h.userId) || [];
+            arr.push(h);
+            receiveByUserId.set(h.userId, arr);
+          }
+
+          // =============================
+          // 4) flatten output ตาม Example
+          //    - เอา "งานค้างล่าสุด" ของ issue/receive ของ user นั้น
+          // =============================
+          const results = users.map(u => {
+            const map0 = (u.MapGroupSection || [])[0] || null;
+
+            const issueLatest = (issueByUserId.get(u.id) || [])[0] || null;     // ✅ ล่าสุด
+            const receiveLatest = (receiveByUserId.get(u.id) || [])[0] || null; // ✅ ล่าสุด
+
+            const issueWos = issueLatest
+              ? Array.from(new Set((issueLatest.BoxIssueTemp || []).map(b => b.wosNo).filter(Boolean)))
+              : [];
+
+            const receiveWos = receiveLatest
+              ? Array.from(new Set((receiveLatest.BoxReceiveTemp || []).map(b => b.wosNo).filter(Boolean)))
+              : [];
+
+            return {
+              id: u.id,
+              empNo: u.empNo,
+              name: u.name,
+              role: u.role,
+              rfId: u.rfId,
+              password: u.password,
+
+              groupId: map0?.groupId ?? null,
+              groupName: map0?.Group?.name ?? null,
+              sectionId: map0?.sectionId ?? null,
+              sectionName: map0?.Section?.name ?? null,
+
+              issue: {
+                hasPending: !!issueLatest,
+                itemNo: issueLatest?.itemNo ?? '',
+                itemName: issueLatest?.itemName ?? '',
+                shift: issueLatest?.shift ?? '',
+                sentDate: issueLatest?.sentDate ?? '',
+                vendorName: issueLatest?.Vendor?.name ?? '',
+                controlLotName: issueLatest?.ControlLot?.name ?? '',
+                boxCount: issueWos.length,   // ✅ จำนวน wosNo ไม่ซ้ำ (หรือถ้าอยากเป็นจำนวน box จริง ใช้ BoxIssueTemp.length)
+                wosNos: issueWos,
+              },
+
+              receive: {
+                hasPending: !!receiveLatest,
+                itemNo: receiveLatest?.itemNo ?? '',
+                itemName: receiveLatest?.itemName ?? '',
+                shift: receiveLatest?.shift ?? '',
+                sentDate: receiveLatest?.receiveDate ?? '', // ✅ map เป็น sentDate ให้ตรง Example
+                vendorName: receiveLatest?.Vendor?.name ?? '',
+                controlLotName: receiveLatest?.ControlLot?.name ?? '',
+                boxCount: receiveWos.length,
+                wosNos: receiveWos,
+              }
+            };
+          });
+
+          return res.send({ results });
+
+        } catch (e) {
+          return res.status(500).send({ error: e.message });
+        }
+},
+
+      
 
       
 

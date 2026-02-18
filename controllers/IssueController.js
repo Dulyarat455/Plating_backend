@@ -551,17 +551,13 @@ module.exports = {
 
     list: async (req, res) => {
       try {
-    
         // =============================
         // 1) ดึง HeaderIssue ก่อน
         // =============================
         const headers = await prisma.headerIssue.findMany({
           where: { status: 'use' },
           orderBy: { id: 'desc' },
-          include: {
-            User: true,
-            Group: true,
-          },
+          include: { User: true, Group: true },
         });
     
         if (!headers.length) return res.send({ results: [] });
@@ -578,10 +574,7 @@ module.exports = {
           const chunk = headerIds.slice(i, i + chunkSize);
     
           const boxes = await prisma.box.findMany({
-            where: {
-              status: 'use',
-              issueId: { in: chunk },
-            },
+            where: { status: 'use', issueId: { in: chunk } },
             orderBy: { id: 'asc' },
           });
     
@@ -592,7 +585,6 @@ module.exports = {
         // 3) group box ตาม issueId
         // =============================
         const boxByIssueId = new Map();
-    
         for (const b of allBoxes) {
           const arr = boxByIssueId.get(b.issueId) || [];
           arr.push(b);
@@ -600,11 +592,56 @@ module.exports = {
         }
     
         // =============================
-        // 4) map output
+        // 4) หา header ที่ควรเปลี่ยน lotState -> complete
         // =============================
-        const results = headers.map(h => {
+        const toCompleteIds = [];
+    
+        for (const h of headers) {
+          const lotState = (h.lotState || '').toLowerCase();
+          if (lotState !== 'wait') continue;
     
           const boxes = boxByIssueId.get(h.id) || [];
+          const completeCount = boxes.reduce((sum, b) => {
+            return sum + ((b.BoxState || '').toLowerCase() === 'complete' ? 1 : 0);
+          }, 0);
+    
+          if (completeCount >= (h.qtyBox || 0) && (h.qtyBox || 0) > 0) {
+            toCompleteIds.push(h.id);
+          }
+        }
+    
+        // =============================
+        // 5) update DB แบบ chunk (id IN ...)
+        // =============================
+        if (toCompleteIds.length) {
+          for (let i = 0; i < toCompleteIds.length; i += chunkSize) {
+            const chunk = toCompleteIds.slice(i, i + chunkSize);
+    
+            await prisma.headerIssue.updateMany({
+              where: {
+                id: { in: chunk },
+                status: 'use',
+                lotState: 'wait', // กัน race condition / กันแก้ซ้ำ
+              },
+              data: { lotState: 'complete' },
+            });
+          }
+        }
+    
+        // =============================
+        // 6) map output (แนบ lotState ที่อัปเดตแล้ว)
+        // =============================
+        const completeSet = new Set(toCompleteIds);
+    
+        const results = headers.map(h => {
+          const boxes = boxByIssueId.get(h.id) || [];
+    
+          const completeCount = boxes.reduce((sum, b) => {
+            return sum + ((b.BoxState || '').toLowerCase() === 'complete' ? 1 : 0);
+          }, 0);
+    
+          const lotStateOut =
+            completeSet.has(h.id) ? 'complete' : h.lotState;
     
           return {
             id: h.id,
@@ -630,19 +667,20 @@ module.exports = {
             qtyBox: h.qtyBox,
             qtySum: h.qtySum,
     
-            lotState: h.lotState,
+            lotState: lotStateOut,           // ✅ อัปเดตแล้ว
+            completeBoxCount: completeCount, // (optional)
     
-            boxes,               // ✅ attach box list
+            boxes,
             boxCount: boxes.length,
           };
         });
     
         return res.send({ results });
-    
       } catch (e) {
         return res.status(500).send({ error: e.message });
       }
     },
+    
     
 
 
