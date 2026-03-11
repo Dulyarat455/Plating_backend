@@ -401,7 +401,7 @@ createHeaderBox: async (req, res) => {
 
    
   const genIssueLotNo = async (tx, dateRef) => {
-      const d = new Date(dateRef);
+      const d = new Date();
       const pad2 = (n) => String(n).padStart(2, "0");
 
       const yy = String(d.getFullYear()).slice(-2); // 2 หลัก
@@ -525,6 +525,11 @@ createHeaderBox: async (req, res) => {
         qtySum,
       };
     });
+
+      // ✅ ส่งสัญญาณไปให้ทุก client รู้ว่ามีการเปลี่ยนแปลง
+      if (global.io) {
+        global.io.emit('lot:changed', { type: 'receive', ...result });
+      }
 
     return res.send({
       message: "receive_create_header_box_success",

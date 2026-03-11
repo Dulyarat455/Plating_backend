@@ -64,5 +64,96 @@ module.exports = {
     },
 
 
+    edit: async (req,res)=>{
+      try{
+        const { id, name } = req.body;
+    
+        if (id == null) {
+          return res.status(400).send({ message: 'missing_id' });
+        }
+
+        if (
+          name == null 
+        ) {
+          return res.status(400).send({ message: 'missing_required_fields' });
+        }
+
+        // ตรวจสอบว่ามี record นี้อยู่ไหม
+        const existing = await prisma.controlLot.findFirst({
+          where: { id: Number(id), status: 'use' }
+        });
+
+        if (!existing) {
+          return res.status(404).send({ message: 'controlLot_not_found' });
+        }
+
+        // ตรวจสอบข้อมูลซ้ำ (ยกเว้น id ตัวเอง)
+        const duplicate = await prisma.controlLot.findFirst({
+          where: {
+            id: { not: Number(id) },
+            name,
+            status: 'use'
+          }
+        });
+
+        if (duplicate) {
+          return res.status(400).send({ message: 'ControlLot_already' });
+        }
+
+        // update
+        const updated = await prisma.controlLot.update({
+          where: { id: Number(id) },
+          data: {
+            name,
+          },
+        });
+
+        return res.send({
+          message: 'edit_ControlLot_success',
+          data: {
+            id: updated.id,
+            name: updated.name,
+          }
+        });
+
+      }catch(e){
+        return res.status(500).send({ error: e.message });
+
+      }
+  },
+
+
+  delete: async (req,res)=>{
+    try{
+      const { id } = req.body;
+        
+      if (!id) {
+        return res.status(400).send({ message: 'missing_id' });
+      }
+  
+      const existing = await prisma.controlLot.findFirst({
+        where: { id: Number(id), status: 'use' }
+      });
+  
+      if (!existing) {
+        return res.status(404).send({ message: 'ControlLot_not_found' });
+      }
+  
+      await prisma.controlLot.update({
+        where: { id: Number(id) },
+        data: { status: 'delete' }
+      });
+  
+      return res.send({
+        message: 'delete_controlLot_success'
+      });
+        
+    }catch(e){
+      return res.status(500).send({ error: e.message });
+
+    }
+}
+
+
 
 }
