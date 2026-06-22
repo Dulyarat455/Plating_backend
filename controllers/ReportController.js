@@ -2,6 +2,7 @@ const {PrismaClient} = require('../generated/prisma');
 const prisma = new PrismaClient();
 
 const ExcelJS = require('exceljs');
+const puppeteer = require('puppeteer');
 
 module.exports = {
 
@@ -84,7 +85,8 @@ module.exports = {
             receiveDate: true,
             receiveDateByUser: true,      // ✅ NEW (receiveShipment)
             shift: true,
-  
+            controlLot: true,
+
             User: {
               select: {
                 empNo: true,
@@ -122,6 +124,7 @@ module.exports = {
   
           vender: issue?.vender ?? null,
           controlLot: issue?.controlLot ?? null,
+          controlLotR: receive?.controlLot ?? null,   // ✅ เพิ่มตรงนี้
   
           issueByEmpNo: issue?.User?.empNo ?? null,
           issueByName: issue?.User?.name ?? null,
@@ -169,12 +172,15 @@ module.exports = {
         controlLot,
         issueNo,
         receiveNo,
-        dateFrom,
-        dateTo,
         groupName,
+  
+        // ✅ new shipment ranges
+        issueShipDateFrom,
+        issueShipDateTo,
+        receiveShipDateFrom,
+        receiveShipDateTo,
       } = filters || {};
   
-      // ---------- helpers ----------
       const formatTime = (d) => {
         if (!d) return '';
         const x = new Date(d);
@@ -184,7 +190,6 @@ module.exports = {
         ).padStart(2, '0')}`;
       };
   
-      // DD/MM/YYYY
       const formatDateDMY = (d) => {
         if (!d) return '';
         const x = new Date(d);
@@ -195,26 +200,28 @@ module.exports = {
         return `${dd}/${mm}/${yyyy}`;
       };
   
-      // ใช้สำหรับ filter date (อ้างอิงจาก IssueDate = sentDate)
-      const startOfDayMs = (yyyy_mm_dd) => {
-        if (!yyyy_mm_dd) return null;
-        const t = new Date(yyyy_mm_dd);
+      const startOfDayMs = (ymd) => {
+        if (!ymd) return null;
+        const [y, m, d] = String(ymd).split('-').map(Number);
+        const t = new Date(y, m - 1, d, 0, 0, 0, 0);
+        const ms = t.getTime();
+        return Number.isFinite(ms) ? ms : null;
+      };
+      
+      const endOfDayMs = (ymd) => {
+        if (!ymd) return null;
+        const [y, m, d] = String(ymd).split('-').map(Number);
+        const t = new Date(y, m - 1, d, 23, 59, 59, 999);
         const ms = t.getTime();
         return Number.isFinite(ms) ? ms : null;
       };
   
-      const endOfDayMs = (yyyy_mm_dd) => {
-        const s = startOfDayMs(yyyy_mm_dd);
-        if (s == null) return null;
-        return s + 86400000 - 1;
-      };
+      // ✅ shipment ranges
+      const issueShipFromMs = startOfDayMs(issueShipDateFrom);
+      const issueShipToMs = endOfDayMs(issueShipDateTo);
+      const receiveShipFromMs = startOfDayMs(receiveShipDateFrom);
+      const receiveShipToMs = endOfDayMs(receiveShipDateTo);
   
-      const fromMs = startOfDayMs(dateFrom);
-      const toMs = endOfDayMs(dateTo);
-  
-      // =====================================================
-      // 1) stream Box ทีละ 500 + join Issue + User + Group
-      // =====================================================
       let lastId = null;
       const allRows = [];
   
@@ -227,8 +234,8 @@ module.exports = {
           include: {
             HeaderIssue: {
               include: {
-                User: true, // Issue By
-                Group: { select: { name: true } }, // Group
+                User: true,
+                Group: { select: { name: true } },
               },
             },
           },
@@ -239,32 +246,24 @@ module.exports = {
         if (!boxes.length) break;
         lastId = boxes[boxes.length - 1].id;
   
-        // =====================================================
-        // 2) load HeaderReceive ของ chunk นี้ (IN 500)
-        // =====================================================
         const receiveIds = [...new Set(boxes.map((b) => b.receiveId).filter(Boolean))];
   
         const receives = receiveIds.length
           ? await prisma.headerReceive.findMany({
               where: { id: { in: receiveIds } },
-              include: { User: true }, // Receive By
+              include: { User: true },
             })
           : [];
   
         const recvMap = new Map(receives.map((r) => [r.id, r]));
   
-        // =====================================================
-        // 3) build userId -> sectionName map (Issue + Receive) ของ chunk นี้
-        // =====================================================
         const issueUserIds = boxes.map((b) => b.HeaderIssue?.userId).filter(Boolean);
         const recvUserIds = receives.map((r) => r.userId).filter(Boolean);
-  
         const userIds = [...new Set([...issueUserIds, ...recvUserIds])];
   
-        const userSectionMap = new Map(); // userId -> sectionName
+        const userSectionMap = new Map();
   
         if (userIds.length) {
-          // เอา MapGroupSection ตัวแรกของ user นั้น (orderBy id asc)
           const maps = await prisma.mapGroupSection.findMany({
             where: {
               status: 'use',
@@ -277,7 +276,6 @@ module.exports = {
             },
           });
   
-          // ใส่แค่ครั้งแรก (ตัวแรกสุด) ต่อ userId
           for (const m of maps) {
             if (!userSectionMap.has(m.userId)) {
               userSectionMap.set(m.userId, m.Section?.name ?? '');
@@ -285,21 +283,16 @@ module.exports = {
           }
         }
   
-        // =====================================================
-        // 4) flatten + apply filters ทีละ chunk
-        // =====================================================
         for (const b of boxes) {
           const issue = b.HeaderIssue;
           const recv = b.receiveId ? recvMap.get(b.receiveId) : null;
   
-          const issueDateObj = issue?.sentDate ? new Date(issue.sentDate) : null;
-          const issueMs = issueDateObj && !isNaN(issueDateObj.getTime()) ? issueDateObj.getTime() : null;
+          const shipI = issue?.sentDateByUser ?? null;
+          const shipR = recv?.receiveDateByUser ?? null;
   
-          // shipment refs
-          const shipI = issue?.sentDateByUser ?? null; // HeaderIssue.sentDateByUser
-          const shipR = recv?.receiveDateByUser ?? null; // HeaderReceive.receiveDateByUser
+          const shipIMs = shipI ? new Date(shipI).getTime() : null;
+          const shipRMs = shipR ? new Date(shipR).getTime() : null;
   
-          // ✅ sections
           const issueSection = issue?.userId ? (userSectionMap.get(issue.userId) ?? '') : '';
           const receiveSection = recv?.userId ? (userSectionMap.get(recv.userId) ?? '') : '';
   
@@ -322,8 +315,6 @@ module.exports = {
             issueBy: issue?.User?.name ?? '',
             issueEmpNo: issue?.User?.empNo ?? '',
             shiftIssue: issue?.shift ?? '',
-  
-            // ✅ NEW: IssueSection
             issueSection: issueSection,
   
             shipmentDateI: formatDateDMY(shipI),
@@ -335,36 +326,40 @@ module.exports = {
             receiveBy: recv?.User?.name ?? '',
             receiveEmpNo: recv?.User?.empNo ?? '',
             shiftReceive: recv?.shift ?? '',
-  
-            // ✅ NEW: ReceiveSection (อาจว่างได้)
             receiveSection: receiveSection,
-  
+            
+            // ✅ NEW
+            controlLotR: recv?.controlLot ?? '',
+
             shipmentDateR: formatDateDMY(shipR),
             shipmentTimeR: formatTime(shipR),
   
             boxState: b.BoxState ?? '',
           };
   
-          // ---------- filters ----------
           if (itemNo && row.itemNo !== itemNo) continue;
           if (itemName && row.itemName !== itemName) continue;
-  
           if (vendor && row.vendor !== vendor) continue;
           if (controlLot && row.controlLot !== controlLot) continue;
-  
           if (groupName && row.group !== groupName) continue;
-  
           if (issueNo && row.issueNo !== issueNo) continue;
           if (receiveNo && row.receiveNo !== receiveNo) continue;
-  
           if (boxState && normLower(row.boxState) !== normLower(boxState)) continue;
   
-          // Date range อ้างอิงจาก IssueDate (sentDate)
-          if (fromMs != null) {
-            if (issueMs == null || issueMs < fromMs) continue;
+          // ✅ ShipmentDate(I) range
+          if (issueShipFromMs != null) {
+            if (shipIMs == null || shipIMs < issueShipFromMs) continue;
           }
-          if (toMs !=null) {
-            if (issueMs == null || issueMs > toMs) continue;
+          if (issueShipToMs != null) {
+            if (shipIMs == null || shipIMs > issueShipToMs) continue;
+          }
+  
+          // ✅ ShipmentDate(R) range
+          if (receiveShipFromMs != null) {
+            if (shipRMs == null || shipRMs < receiveShipFromMs) continue;
+          }
+          if (receiveShipToMs != null) {
+            if (shipRMs == null || shipRMs > receiveShipToMs) continue;
           }
   
           allRows.push(row);
@@ -373,9 +368,6 @@ module.exports = {
         if (boxes.length < chunkSize) break;
       }
   
-      // =====================================================
-      // 5) create excel
-      // =====================================================
       const wb = new ExcelJS.Workbook();
       const ws = wb.addWorksheet('Report');
   
@@ -395,28 +387,23 @@ module.exports = {
         { header: 'IssueNo', key: 'issueNo', width: 16 },
         { header: 'IssueDate', key: 'issueDate', width: 12 },
         { header: 'TimeIssue', key: 'timeIssue', width: 12 },
+        { header: 'ShipmentDate(I)', key: 'shipmentDateI', width: 14 },
+        { header: 'ShipmentTime(I)', key: 'shipmentTimeI', width: 14 },
         { header: 'IssueBy', key: 'issueBy', width: 22 },
         { header: 'IssueEmpNo', key: 'issueEmpNo', width: 14 },
         { header: 'Shift(I)', key: 'shiftIssue', width: 10 },
-  
-        // ✅ NEW
         { header: 'IssueSection', key: 'issueSection', width: 16 },
   
-        { header: 'ShipmentDate(I)', key: 'shipmentDateI', width: 14 },
-        { header: 'ShipmentTime(I)', key: 'shipmentTimeI', width: 14 },
-  
         { header: 'ReceiveNo', key: 'receiveNo', width: 16 },
+        { header: 'ControlLot(R)', key: 'controlLotR', width: 16 },
         { header: 'ReceiveDate', key: 'receiveDate', width: 12 },
         { header: 'TimeReceive', key: 'timeReceive', width: 12 },
+        { header: 'ShipmentDate(R)', key: 'shipmentDateR', width: 14 },
+        { header: 'ShipmentTime(R)', key: 'shipmentTimeR', width: 14 },
         { header: 'ReceiveBy', key: 'receiveBy', width: 22 },
         { header: 'ReceiveEmpNo', key: 'receiveEmpNo', width: 14 },
         { header: 'Shift(R)', key: 'shiftReceive', width: 10 },
-  
-        // ✅ NEW
         { header: 'ReceiveSection', key: 'receiveSection', width: 16 },
-  
-        { header: 'ShipmentDate(R)', key: 'shipmentDateR', width: 14 },
-        { header: 'ShipmentTime(R)', key: 'shipmentTimeR', width: 14 },
   
         { header: 'BoxState', key: 'boxState', width: 12 },
       ];
@@ -424,9 +411,6 @@ module.exports = {
       ws.getRow(1).font = { bold: true };
       for (const r of allRows) ws.addRow(r);
   
-      // =====================================================
-      // 6) send file (ชื่อเดิมตามของคุณ)
-      // =====================================================
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="Report.xlsx"`);
   
@@ -436,6 +420,895 @@ module.exports = {
       return res.status(500).send({ error: e.message });
     }
   },
+
+
+
+  // printTestPdf: async (req, res) => {
+  //   let browser;
   
+  //   try {
+  //     const html = `
+  // <!DOCTYPE html>
+  // <html>
+  // <head>
+  //   <meta charset="UTF-8" />
+  //   <style>
+  //     @page {
+  //       size: A4 landscape;
+  //       margin: 8mm;
+  //     }
+  
+  //     * {
+  //       box-sizing: border-box;
+  //     }
+  
+  //     body {
+  //       font-family: Arial, "TH Sarabun New", sans-serif;
+  //       margin: 0;
+  //       color: #333;
+  //       font-size: 11px;
+  //     }
+  
+  //     .page {
+  //       width: 100%;
+  //       min-height: 190mm;
+  //       position: relative;
+  //     }
+  
+  //     .top {
+  //       display: grid;
+  //       grid-template-columns: 1fr 2fr 1fr;
+  //       align-items: start;
+  //       margin-bottom: 14px;
+  //     }
+  
+  //     .title {
+  //       text-align: center;
+  //       font-weight: bold;
+  //       line-height: 1.45;
+  //     }
+  
+  //     .title .company {
+  //       font-size: 23px;
+  //     }
+  
+  //     .title .thai {
+  //       font-size: 17px;
+  //     }
+  
+  //     .title .eng {
+  //       font-size: 17px;
+  //     }
+  
+  //     .title .division {
+  //       font-size: 16px;
+  //       margin-top: 6px;
+  //     }
+  
+  //     .form-no {
+  //       text-align: right;
+  //       line-height: 2.3;
+  //       font-size: 12px;
+  //       padding-top: 8px;
+  //     }
+  
+  //     .header-grid {
+  //       display: grid;
+  //       grid-template-columns: 2.1fr 1.6fr 2fr 0.9fr 2.2fr;
+  //       gap: 26px;
+  //       align-items: start;
+  //       margin-bottom: 16px;
+  //     }
+  
+  //     table {
+  //       border-collapse: collapse;
+  //       width: 100%;
+  //     }
+  
+  //     .box-table td,
+  //     .box-table th {
+  //       border: 1px solid #444;
+  //       height: 34px;
+  //       text-align: center;
+  //       vertical-align: middle;
+  //     }
+  
+  //     .box-table th {
+  //       font-weight: normal;
+  //     }
+  
+  //     .check-table td {
+  //       border: 1px solid #444;
+  //       height: 26px;
+  //       padding: 2px 8px;
+  //     }
+  
+  //     .check-box {
+  //       display: inline-block;
+  //       width: 22px;
+  //       height: 20px;
+  //       border: 1px solid #444;
+  //       margin-right: 22px;
+  //       vertical-align: middle;
+  //     }
+  
+  //     .right-info {
+  //       line-height: 3.3;
+  //       font-size: 12px;
+  //       white-space: nowrap;
+  //     }
+  
+  //     .dot {
+  //       display: inline-block;
+  //       border-bottom: 1px dotted #555;
+  //       width: 165px;
+  //       height: 12px;
+  //     }
+  
+  //     .main-table th,
+  //     .main-table td {
+  //       border: 1px solid #444;
+  //       text-align: center;
+  //       vertical-align: middle;
+  //     }
+  
+  //     .main-table th {
+  //       height: 34px;
+  //       font-weight: normal;
+  //       line-height: 1.35;
+  //       font-size: 10px;
+  //     }
+  
+  //     .main-table td {
+  //       height: 26px;
+  //     }
+  
+  //     .main-table .no { width: 34px; }
+  //     .main-table .po { width: 78px; }
+  //     .main-table .qty { width: 58px; }
+  //     .main-table .partno { width: 112px; }
+  //     .main-table .desc { width: 122px; }
+  //     .main-table .qtyout { width: 58px; }
+  //     .main-table .unit { width: 50px; }
+  //     .main-table .totalunit { width: 88px; }
+  //     .main-table .sample { width: 38px; }
+  //     .main-table .sign { width: 86px; }
+  
+  //     .footer {
+  //       display: grid;
+  //       grid-template-columns: 1fr 1fr;
+  //       margin-top: 10px;
+  //       font-size: 12px;
+  //     }
+  
+  //     .note {
+  //       line-height: 1.8;
+  //     }
+  
+  //     .approve {
+  //       justify-self: end;
+  //       width: 310px;
+  //       line-height: 2.4;
+  //     }
+  
+  //     .small {
+  //       font-size: 10px;
+  //     }
+  
+  //     .code {
+  //       position: absolute;
+  //       right: 0;
+  //       bottom: 0;
+  //       font-size: 9px;
+  //     }
+  //   </style>
+  // </head>
+  
+  // <body>
+  //   <div class="page">
+  
+  //     <div class="top">
+  //       <div></div>
+  
+  //       <div class="title">
+  //         <div class="company">NMB-Minebea Thai Ltd.</div>
+  //         <div class="thai">ใบผ่านงาน HOME WORK (ขาออก)</div>
+  //         <div class="eng">HOME WORK GATE PASS (OUT)</div>
+  //         <div class="division">DIVISION........................................</div>
+  //       </div>
+  
+  //       <div class="form-no">
+  //         <div>แบบฟอร์มที่&nbsp;&nbsp; 1</div>
+  //         <div>FROM&nbsp;&nbsp; 1</div>
+  //       </div>
+  //     </div>
+  
+  //     <div class="header-grid">
+  //       <table class="box-table">
+  //         <tr>
+  //           <th>ชื่อเวนเดอร์<br>VENDOR NAME</th>
+  //           <th>เลขที่เวนเดอร์<br>VENDOR CODE</th>
+  //         </tr>
+  //         <tr>
+  //           <td></td>
+  //           <td></td>
+  //         </tr>
+  //       </table>
+  
+  //       <table class="check-table">
+  //         <tr><td><span class="check-box"></span>OVER ISSUED</td></tr>
+  //         <tr><td><span class="check-box"></span>NG TO REWORK</td></tr>
+  //         <tr><td><span class="check-box"></span>NIGHT SHIFT</td></tr>
+  //       </table>
+  
+  //       <table class="box-table">
+  //         <tr>
+  //           <th>รหัสสินค้า<br>ITEM NAME</th>
+  //           <th>เลขที่สินค้า<br>ITEM NO</th>
+  //         </tr>
+  //         <tr>
+  //           <td></td>
+  //           <td></td>
+  //         </tr>
+  //       </table>
+  
+  //       <table class="box-table">
+  //         <tr>
+  //           <th>เลขที่รุ่น<br>MODEL NO</th>
+  //         </tr>
+  //         <tr>
+  //           <td></td>
+  //         </tr>
+  //       </table>
+  
+  //       <div class="right-info">
+  //         <div>เลขที่ (NO)&nbsp;&nbsp;<span class="dot"></span></div>
+  //         <div>วันที่ (DATE)&nbsp;&nbsp;<span class="dot"></span></div>
+  //         <div>เวลา (TIME)&nbsp;&nbsp;<span class="dot"></span></div>
+  //       </div>
+  //     </div>
+  
+  //     <table class="main-table">
+  //       <thead>
+  //         <tr>
+  //           <th rowspan="2" class="no">ลำดับที่<br>NO.</th>
+  //           <th rowspan="2" class="po">เลขที่ P/O<br>P/O NO</th>
+  //           <th rowspan="2" class="qty">จำนวน<br>QTY</th>
+  //           <th rowspan="2" class="partno">เลขที่ชิ้นงาน<br>PART NO</th>
+  //           <th rowspan="2" class="desc">ชื่องาน/รายละเอียด<br>PART NAME/<br>DESCRIPTION</th>
+  //           <th rowspan="2" class="qtyout">จำนวนส่งออก<br>QTY (OUT)</th>
+  //           <th rowspan="2" class="unit">หน่วยนับ<br>UNIT</th>
+  //           <th rowspan="2" class="totalunit">จำนวนภาชนะบรรจุ<br>TOTAL UNIT</th>
+  //           <th colspan="8">จำนวนสุ่มตรวจ (RANDOM SAMPLING CHECK)</th>
+  //           <th rowspan="2" class="sign">ส่งโดยฝ่ายผลิต<br>SENT BY<br>PRODUCTION</th>
+  //           <th rowspan="2" class="sign">รับโดยเวนเดอร์<br>RECEIVED BY<br>VENDOR</th>
+  //           <th rowspan="2" class="sign">ตรวจสอบสินค้าโดย รปภ<br>CHECKED BY<br>GUARDMAN</th>
+  //         </tr>
+  //         <tr>
+  //           <th class="sample">1</th>
+  //           <th class="sample">2</th>
+  //           <th class="sample">3</th>
+  //           <th class="sample">4</th>
+  //           <th class="sample">5</th>
+  //           <th class="sample">6</th>
+  //           <th class="sample">7</th>
+  //           <th class="sample">8</th>
+  //         </tr>
+  //       </thead>
+  
+  //       <tbody>
+  //         ${Array.from({ length: 13 }).map(() => `
+  //           <tr>
+  //             ${Array.from({ length: 19 }).map(() => `<td></td>`).join('')}
+  //           </tr>
+  //         `).join('')}
+  //       </tbody>
+  //     </table>
+  
+  //     <div class="footer">
+  //       <div class="note">
+  //         <div>ต้นฉบับ &nbsp;&nbsp;&nbsp;&nbsp; : ฝ่ายบัญชี</div>
+  //         <div>ORIGINAL &nbsp;&nbsp; : ACCOUNT DIVISION</div>
+  //         <div>หมายเหตุ &nbsp;&nbsp;&nbsp;&nbsp; : 1. ห้ามทำการลบ,ขีด,ฆ่า ข้อมูลใด ๆทั้งสิ้น</div>
+  //         <div class="small">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NOT ALLOW TO DELETE OR CORRECT ANY DATA</div>
+  //       </div>
+  
+  //       <div class="approve">
+  //         <div>อนุมัติโดย &nbsp;&nbsp; : ....................................................</div>
+  //         <div>APPROVED BY (&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;)</div>
+  //         <div>วันที่ (DATE)&nbsp; : ....................................................</div>
+  //       </div>
+  //     </div>
+  
+  //     <div class="code">M2-4239A4</div>
+  //   </div>
+  // </body>
+  // </html>
+  //     `;
+  
+  //     browser = await puppeteer.launch({
+  //       headless: true,
+  //       args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  //     });
+  
+  //     const page = await browser.newPage();
+  
+  //     await page.setContent(html, {
+  //       waitUntil: 'networkidle0',
+  //     });
+  
+  //     const pdfBuffer = await page.pdf({
+  //       format: 'A4',
+  //       landscape: true,
+  //       printBackground: true,
+  //       preferCSSPageSize: true,
+  //       scale: 0.92,
+  //       margin: {
+  //         top: '8mm',
+  //         right: '8mm',
+  //         bottom: '8mm',
+  //         left: '8mm',
+  //       },
+  //     });
+  
+  //     res.setHeader('Content-Type', 'application/pdf');
+  //     res.setHeader('Content-Disposition', 'inline; filename="HomeWorkGatePass-Test.pdf"');
+  //     return res.send(pdfBuffer);
+  
+  //   } catch (e) {
+  //     return res.status(500).send({ error: e.message });
+  //   } finally {
+  //     if (browser) await browser.close();
+  //   }
+  // }
+  
+
+
+
+  printTestPdf: async (req, res) => {
+  let browser;
+
+  try {
+    const puppeteer = require('puppeteer');
+
+    const chunkSize = 500;
+    const { filters } = req.body || {};
+
+    const norm = (v) => (v ?? '').toString().trim();
+    const normLower = (v) => norm(v).toLowerCase();
+
+    const {
+      itemNo,
+      itemName,
+      boxState,
+      vendor,
+      controlLot,
+      issueNo,
+      receiveNo,
+      groupName,
+      issueShipDateFrom,
+      issueShipDateTo,
+      receiveShipDateFrom,
+      receiveShipDateTo,
+    } = filters || {};
+
+    const escapeHtml = (v) => {
+      return (v ?? '')
+        .toString()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    };
+
+    const formatNumber = (v) => {
+      const n = Number(v || 0);
+      if (!Number.isFinite(n)) return '';
+      return n.toLocaleString('en-US');
+    };
+
+    const startOfDayMs = (ymd) => {
+      if (!ymd) return null;
+      const [y, m, d] = String(ymd).split('-').map(Number);
+      const t = new Date(y, m - 1, d, 0, 0, 0, 0);
+      const ms = t.getTime();
+      return Number.isFinite(ms) ? ms : null;
+    };
+
+    const endOfDayMs = (ymd) => {
+      if (!ymd) return null;
+      const [y, m, d] = String(ymd).split('-').map(Number);
+      const t = new Date(y, m - 1, d, 23, 59, 59, 999);
+      const ms = t.getTime();
+      return Number.isFinite(ms) ? ms : null;
+    };
+
+    const issueShipFromMs = startOfDayMs(issueShipDateFrom);
+    const issueShipToMs = endOfDayMs(issueShipDateTo);
+    const receiveShipFromMs = startOfDayMs(receiveShipDateFrom);
+    const receiveShipToMs = endOfDayMs(receiveShipDateTo);
+
+    let lastId = null;
+    const groupMap = new Map();
+
+    while (true) {
+      const boxes = await prisma.box.findMany({
+        where: {
+          status: 'use',
+          ...(lastId ? { id: { lt: lastId } } : {}),
+        },
+        include: {
+          HeaderIssue: {
+            include: {
+              User: true,
+              Group: { select: { name: true } },
+            },
+          },
+        },
+        orderBy: { id: 'desc' },
+        take: chunkSize,
+      });
+
+      if (!boxes.length) break;
+      lastId = boxes[boxes.length - 1].id;
+
+      const receiveIds = [
+        ...new Set(boxes.map((b) => b.receiveId).filter(Boolean)),
+      ];
+
+      const receives = receiveIds.length
+        ? await prisma.headerReceive.findMany({
+            where: { id: { in: receiveIds } },
+            include: { User: true },
+          })
+        : [];
+
+      const recvMap = new Map(receives.map((r) => [r.id, r]));
+
+      for (const b of boxes) {
+        const issue = b.HeaderIssue;
+        const recv = b.receiveId ? recvMap.get(b.receiveId) : null;
+
+        const shipI = issue?.sentDateByUser ?? null;
+        const shipR = recv?.receiveDateByUser ?? null;
+
+        const shipIMs = shipI ? new Date(shipI).getTime() : null;
+        const shipRMs = shipR ? new Date(shipR).getTime() : null;
+
+        const row = {
+          itemNo: b.itemNo ?? '',
+          itemName: b.itemName ?? '',
+          qty: Number(b.qty || 0),
+
+          vendor: issue?.vender ?? '',
+          controlLot: issue?.controlLot ?? '',
+          group: issue?.Group?.name ?? '',
+          issueNo: issue?.issueLotNo ?? '',
+          receiveNo: recv?.receiveLotNo ?? '',
+          boxState: b.BoxState ?? '',
+        };
+
+        if (itemNo && row.itemNo !== itemNo) continue;
+        if (itemName && row.itemName !== itemName) continue;
+        if (vendor && row.vendor !== vendor) continue;
+        if (controlLot && row.controlLot !== controlLot) continue;
+        if (groupName && row.group !== groupName) continue;
+        if (issueNo && row.issueNo !== issueNo) continue;
+        if (receiveNo && row.receiveNo !== receiveNo) continue;
+        if (boxState && normLower(row.boxState) !== normLower(boxState)) continue;
+
+        if (issueShipFromMs != null) {
+          if (shipIMs == null || shipIMs < issueShipFromMs) continue;
+        }
+
+        if (issueShipToMs != null) {
+          if (shipIMs == null || shipIMs > issueShipToMs) continue;
+        }
+
+        if (receiveShipFromMs != null) {
+          if (shipRMs == null || shipRMs < receiveShipFromMs) continue;
+        }
+
+        if (receiveShipToMs != null) {
+          if (shipRMs == null || shipRMs > receiveShipToMs) continue;
+        }
+
+        const key = `${row.itemNo}||${row.itemName}`;
+
+        if (!groupMap.has(key)) {
+          groupMap.set(key, {
+            itemNo: row.itemNo,
+            itemName: row.itemName,
+            qty: 0,
+            totalUnit: 0,
+          });
+        }
+
+        const g = groupMap.get(key);
+        g.qty += row.qty;
+        g.totalUnit += 1;
+      }
+
+      if (boxes.length < chunkSize) break;
+    }
+
+    const printRows = Array.from(groupMap.values()).map((x, index) => ({
+      no: index + 1,
+      partNo: x.itemNo,
+      partName: x.itemName,
+      qtyOut: x.qty,
+      unit: 'PCS',
+      totalUnit: `${x.totalUnit} BOX`,
+    }));
+
+    const maxRows = 13;
+
+    const tableRowsHtml = Array.from({ length: maxRows }).map((_, i) => {
+      const r = printRows[i];
+
+      return `
+        <tr>
+          <td>${r ? escapeHtml(r.no) : ''}</td>
+          <td></td>
+          <td></td>
+          <td>${r ? escapeHtml(r.partNo) : ''}</td>
+          <td>${r ? escapeHtml(r.partName) : ''}</td>
+          <td>${r ? escapeHtml(formatNumber(r.qtyOut)) : ''}</td>
+          <td>${r ? escapeHtml(r.unit) : ''}</td>
+          <td>${r ? escapeHtml(r.totalUnit) : ''}</td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+        </tr>
+      `;
+    }).join('');
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 8mm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, "TH Sarabun New", sans-serif;
+      margin: 0;
+      color: #333;
+      font-size: 11px;
+    }
+
+    .page {
+      width: 100%;
+      min-height: 190mm;
+      position: relative;
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: 1fr 2fr 1fr;
+      align-items: start;
+      margin-bottom: 14px;
+    }
+
+    .title {
+      text-align: center;
+      font-weight: bold;
+      line-height: 1.45;
+    }
+
+    .title .company {
+      font-size: 23px;
+    }
+
+    .title .thai {
+      font-size: 17px;
+    }
+
+    .title .eng {
+      font-size: 17px;
+    }
+
+    .title .division {
+      font-size: 16px;
+      margin-top: 6px;
+    }
+
+    .form-no {
+      text-align: right;
+      line-height: 2.3;
+      font-size: 12px;
+      padding-top: 8px;
+    }
+
+    .header-grid {
+      display: grid;
+      grid-template-columns: 2.1fr 1.6fr 2fr 0.9fr 2.2fr;
+      gap: 26px;
+      align-items: start;
+      margin-bottom: 16px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+
+    .box-table td,
+    .box-table th {
+      border: 1px solid #444;
+      height: 34px;
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    .box-table th {
+      font-weight: normal;
+    }
+
+    .check-table td {
+      border: 1px solid #444;
+      height: 26px;
+      padding: 2px 8px;
+    }
+
+    .check-box {
+      display: inline-block;
+      width: 22px;
+      height: 20px;
+      border: 1px solid #444;
+      margin-right: 22px;
+      vertical-align: middle;
+    }
+
+    .right-info {
+      line-height: 3.3;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .dot {
+      display: inline-block;
+      border-bottom: 1px dotted #555;
+      width: 165px;
+      height: 12px;
+    }
+
+    .main-table th,
+    .main-table td {
+      border: 1px solid #444;
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    .main-table th {
+      height: 34px;
+      font-weight: normal;
+      line-height: 1.35;
+      font-size: 10px;
+    }
+
+    .main-table td {
+      height: 26px;
+      padding: 1px 3px;
+      font-size: 10px;
+      word-break: break-word;
+    }
+
+    .main-table .no { width: 34px; }
+    .main-table .po { width: 78px; }
+    .main-table .qty { width: 58px; }
+    .main-table .partno { width: 112px; }
+    .main-table .desc { width: 122px; }
+    .main-table .qtyout { width: 58px; }
+    .main-table .unit { width: 50px; }
+    .main-table .totalunit { width: 88px; }
+    .main-table .sample { width: 38px; }
+    .main-table .sign { width: 86px; }
+
+    .footer {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+
+    .note {
+      line-height: 1.8;
+    }
+
+    .approve {
+      justify-self: end;
+      width: 310px;
+      line-height: 2.4;
+    }
+
+    .small {
+      font-size: 10px;
+    }
+
+    .code {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      font-size: 9px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+
+    <div class="top">
+      <div></div>
+
+      <div class="title">
+        <div class="company">NMB-Minebea Thai Ltd.</div>
+        <div class="thai">ใบผ่านงาน HOME WORK (ขาออก)</div>
+        <div class="eng">HOME WORK GATE PASS (OUT)</div>
+        <div class="division">DIVISION................PRESS...................</div>
+      </div>
+
+      <div class="form-no">
+        <div>แบบฟอร์มที่&nbsp;&nbsp; 1</div>
+        <div>FROM&nbsp;&nbsp; 1</div>
+      </div>
+    </div>
+
+    <div class="header-grid">
+      <table class="box-table">
+        <tr>
+          <th>ชื่อเวนเดอร์<br>VENDOR NAME</th>
+          <th>เลขที่เวนเดอร์<br>VENDOR CODE</th>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+        </tr>
+      </table>
+
+      <table class="check-table">
+        <tr><td><span class="check-box"></span>OVER ISSUED</td></tr>
+        <tr><td><span class="check-box"></span>NG TO REWORK</td></tr>
+        <tr><td><span class="check-box"></span>NIGHT SHIFT</td></tr>
+      </table>
+
+      <table class="box-table">
+        <tr>
+          <th>รหัสสินค้า<br>ITEM NAME</th>
+          <th>เลขที่สินค้า<br>ITEM NO</th>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+        </tr>
+      </table>
+
+      <table class="box-table">
+        <tr>
+          <th>เลขที่รุ่น<br>MODEL NO</th>
+        </tr>
+        <tr>
+          <td></td>
+        </tr>
+      </table>
+
+      <div class="right-info">
+        <div>เลขที่ (NO)&nbsp;&nbsp;<span class="dot"></span></div>
+        <div>วันที่ (DATE)&nbsp;&nbsp;<span class="dot"></span></div>
+        <div>เวลา (TIME)&nbsp;&nbsp;<span class="dot"></span></div>
+      </div>
+    </div>
+
+    <table class="main-table">
+      <thead>
+        <tr>
+          <th rowspan="2" class="no">ลำดับที่<br>NO.</th>
+          <th rowspan="2" class="po">เลขที่ P/O<br>P/O NO</th>
+          <th rowspan="2" class="qty">จำนวน<br>QTY</th>
+          <th rowspan="2" class="partno">เลขที่ชิ้นงาน<br>PART NO</th>
+          <th rowspan="2" class="desc">ชื่องาน/รายละเอียด<br>PART NAME/<br>DESCRIPTION</th>
+          <th rowspan="2" class="qtyout">จำนวนส่งออก<br>QTY (OUT)</th>
+          <th rowspan="2" class="unit">หน่วยนับ<br>UNIT</th>
+          <th rowspan="2" class="totalunit">จำนวนภาชนะบรรจุ<br>TOTAL UNIT</th>
+          <th colspan="8">จำนวนสุ่มตรวจ (RANDOM SAMPLING CHECK)</th>
+          <th rowspan="2" class="sign">ส่งโดยฝ่ายผลิต<br>SENT BY<br>PRODUCTION</th>
+          <th rowspan="2" class="sign">รับโดยเวนเดอร์<br>RECEIVED BY<br>VENDOR</th>
+          <th rowspan="2" class="sign">ตรวจสอบสินค้าโดย รปภ<br>CHECKED BY<br>GUARDMAN</th>
+        </tr>
+        <tr>
+          <th class="sample">1</th>
+          <th class="sample">2</th>
+          <th class="sample">3</th>
+          <th class="sample">4</th>
+          <th class="sample">5</th>
+          <th class="sample">6</th>
+          <th class="sample">7</th>
+          <th class="sample">8</th>
+        </tr>
+      </thead>
+
+      <tbody>
+        ${tableRowsHtml}
+      </tbody>
+    </table>
+
+    <div class="footer">
+      <div class="note">
+        <div>ต้นฉบับ &nbsp;&nbsp;&nbsp;&nbsp; : ฝ่ายบัญชี</div>
+        <div>ORIGINAL &nbsp;&nbsp; : ACCOUNT DIVISION</div>
+        <div>หมายเหตุ &nbsp;&nbsp;&nbsp;&nbsp; : 1. ห้ามทำการลบ,ขีด,ฆ่า ข้อมูลใด ๆทั้งสิ้น</div>
+        <div class="small">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NOT ALLOW TO DELETE OR CORRECT ANY DATA</div>
+      </div>
+
+      <div class="approve">
+        <div>อนุมัติโดย &nbsp;&nbsp; : ....................................................</div>
+        <div>APPROVED BY (&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;)</div>
+        <div>วันที่ (DATE)&nbsp; : ....................................................</div>
+      </div>
+    </div>
+
+    <div class="code">M2-4239A4</div>
+  </div>
+</body>
+</html>
+    `;
+
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    const page = await browser.newPage();
+
+    await page.setContent(html, {
+      waitUntil: 'networkidle0',
+    });
+
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      landscape: true,
+      printBackground: true,
+      preferCSSPageSize: true,
+      scale: 0.92,
+      margin: {
+        top: '8mm',
+        right: '8mm',
+        bottom: '8mm',
+        left: '8mm',
+      },
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="HomeWorkGatePass-Test.pdf"');
+    return res.send(pdfBuffer);
+
+  } catch (e) {
+    return res.status(500).send({ error: e.message });
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+
+
+
+
 }
 

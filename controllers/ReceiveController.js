@@ -171,6 +171,21 @@ module.exports = {
                     return res.status(400).send({ message: 'missing_required_fields' });
                   }
 
+
+                  const checkBoxByItemMaster = await prisma.partMaster.findFirst({
+                    where:{
+                      itemNo: itemNo,
+                      status: "use"
+                    }
+                  })
+
+
+                  if(!checkBoxByItemMaster){
+                    return res.status(400).send({ message: 'ไม่มี ItemNo และ ItemName นี้ในระบบ'});
+                  }
+
+
+
                   //check in table box before scan receive temp 
                   const  checkBoxIssue = await prisma.box.findFirst({
                     where: {
@@ -497,10 +512,10 @@ createHeaderBox: async (req, res) => {
             status: "use",
       
             // ใช้ field เหล่านี้จับคู่
-            itemNo: b.itemNo,
+            // itemNo: b.itemNo,
             wosNo: b.wosNo,
-            dieNo: b.dieNo,
-            lotNo: b.lotNo,
+            // dieNo: b.dieNo,
+            // lotNo: b.lotNo,
           },
           data: {
             receiveId: newHeader.id,

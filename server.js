@@ -15,8 +15,8 @@ dotenv.config();
 
 const allowedOrigins = [
      // 'http://localhost:4200',
-    // 'http://10.121.49.221:4200', // 👈 ใส่ IP เครื่อง Server notebook
-    'http://10.121.1.85'// เครื่อง server จริง
+     'http://10.121.51.149:4200', // 👈 ใส่ IP เครื่อง Server notebook
+    //'http://10.121.1.85'// เครื่อง server จริง
   
   ];
 
@@ -173,19 +173,19 @@ app.get('/api/receive/list',(req, res)=> receiveController.list(req,res));
 app.get('/api/report/list',(req, res)=> reportController.list(req,res));
 app.post('/api/report/exportExcel',(req,res)=> reportController.exportExcel(req,res));
 
-
+app.post('/api/report/printTestPdf',(req,res)=> reportController.printTestPdf(req,res));
 
 
 
 // เครื่อง server จริง
-server.listen(3005,() => {
-  console.log('API + WebSocket listening on port 3004');
+//  server.listen(3005,() => {
+//    console.log('API + WebSocket listening on port 3005');
+//  });
+
+
+
+
+app.listen(3001);
+server.listen(3001,'0.0.0.0', () => {
+   console.log('API + WebSocket listening on port 3001');
 });
-
-
-
-
-// app.listen(3001);
-// server.listen(3001,'0.0.0.0', () => {
-//     console.log('API + WebSocket listening on port 3001');
-// });
