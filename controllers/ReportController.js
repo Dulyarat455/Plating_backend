@@ -941,7 +941,22 @@ module.exports = {
         if (boxes.length < chunkSize) break;
       }
   
-      const printRows = Array.from(groupMap.values()).map((x, index) => ({
+      const printRows = Array.from(groupMap.values())
+      .sort((a, b) => {
+        // เรียง ItemName ก่อน
+        const byName = a.itemName.localeCompare(b.itemName);
+    
+        if (byName !== 0) return byName;
+    
+        // ItemName เหมือนกัน เรียง ItemNo
+        const byItemNo = a.itemNo.localeCompare(b.itemNo);
+    
+        if (byItemNo !== 0) return byItemNo;
+    
+        // ItemNo เหมือนกัน เรียง DieNo
+        return a.dieNo.localeCompare(b.dieNo);
+      })
+      .map((x, index) => ({
         no: index + 1,
         poNo: x.dieNo,
         partNo: x.itemNo,
