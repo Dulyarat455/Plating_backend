@@ -15,7 +15,7 @@ dotenv.config();
 
 const allowedOrigins = [
      // 'http://localhost:4200',
-     'http://10.121.51.149:4200', // 👈 ใส่ IP เครื่อง Server notebook
+     'http://10.121.49.155:4200', // 👈 ใส่ IP เครื่อง Server notebook
     //'http://10.121.1.85'// เครื่อง server จริง
   
   ];
@@ -174,6 +174,7 @@ app.get('/api/report/list',(req, res)=> reportController.list(req,res));
 app.post('/api/report/exportExcel',(req,res)=> reportController.exportExcel(req,res));
 
 app.post('/api/report/printTestPdf',(req,res)=> reportController.printTestPdf(req,res));
+app.post('/api/report/downloadPdf',(req,res)=> reportController.downloadPdf(req,res));
 
 
 

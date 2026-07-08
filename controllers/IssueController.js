@@ -15,11 +15,11 @@ module.exports = {
           if (
             userId == null ||
             groupId == null ||
-            shift == null || 
+            !shift  || 
             venderId == null ||
             controlLotId == null ||
-            itemNo == null ||
-            itemName == null ||
+            !itemNo  ||
+            !itemName ||
             qtyBox == null ||
             sentDateByUser == null
           ) {

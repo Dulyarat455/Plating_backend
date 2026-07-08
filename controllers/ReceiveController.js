@@ -21,8 +21,8 @@ module.exports = {
                 shift == null || 
                 venderId == null ||
                 controlLotId == null ||
-                itemNo == null ||
-                itemName == null ||
+                !itemNo  ||
+                !itemName  ||
                 qtyBox == null ||
                 receiveDateByUser == null
               ) {
