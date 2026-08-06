@@ -842,6 +842,10 @@ module.exports = {
         const boxes = await prisma.box.findMany({
           where: {
             status: 'use',
+        
+            // เอาเฉพาะ Box ที่ยังไม่ถูก Receive
+            receiveId: null,
+        
             ...(lastId ? { id: { lt: lastId } } : {}),
           },
           include: {
@@ -1413,6 +1417,10 @@ module.exports = {
         const boxes = await prisma.box.findMany({
           where: {
             status: 'use',
+        
+            // เอาเฉพาะ Box ที่ยังไม่ถูก Receive
+            receiveId: null,
+        
             ...(lastId ? { id: { lt: lastId } } : {}),
           },
           include: {
