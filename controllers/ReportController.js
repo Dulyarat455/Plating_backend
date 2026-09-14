@@ -2064,10 +2064,12 @@ module.exports = {
       const { default: puppeteer } = await import('puppeteer');
   
       const chunkSize = 500;
+      const rowsPerPage = 13;
+  
       const { filters } = req.body || {};
   
-      const norm = (v) => (v ?? '').toString().trim();
-      const normLower = (v) => norm(v).toLowerCase();
+      const norm = (value) => (value ?? '').toString().trim();
+      const normLower = (value) => norm(value).toLowerCase();
   
       const {
         itemNo,
@@ -2084,8 +2086,12 @@ module.exports = {
         receiveShipDateTo,
       } = filters || {};
   
-      const escapeHtml = (v) => {
-        return (v ?? '')
+      /* =====================================================
+         Helpers
+      ===================================================== */
+  
+      const escapeHtml = (value) => {
+        return (value ?? '')
           .toString()
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
@@ -2094,503 +2100,1119 @@ module.exports = {
           .replace(/'/g, '&#039;');
       };
   
-      const formatNumber = (v) => {
-        const n = Number(v || 0);
-        if (!Number.isFinite(n)) return '';
-        return n.toLocaleString('en-US');
+      const formatNumber = (value) => {
+        const number = Number(value || 0);
+  
+        if (!Number.isFinite(number)) {
+          return '';
+        }
+  
+        return number.toLocaleString('en-US');
       };
   
       const startOfDayMs = (ymd) => {
         if (!ymd) return null;
-        const [y, m, d] = String(ymd).split('-').map(Number);
-        const t = new Date(y, m - 1, d, 0, 0, 0, 0);
-        const ms = t.getTime();
-        return Number.isFinite(ms) ? ms : null;
+  
+        const [year, month, day] = String(ymd)
+          .split('-')
+          .map(Number);
+  
+        const date = new Date(
+          year,
+          month - 1,
+          day,
+          0,
+          0,
+          0,
+          0
+        );
+  
+        const milliseconds = date.getTime();
+  
+        return Number.isFinite(milliseconds)
+          ? milliseconds
+          : null;
       };
   
       const endOfDayMs = (ymd) => {
         if (!ymd) return null;
-        const [y, m, d] = String(ymd).split('-').map(Number);
-        const t = new Date(y, m - 1, d, 23, 59, 59, 999);
-        const ms = t.getTime();
-        return Number.isFinite(ms) ? ms : null;
+  
+        const [year, month, day] = String(ymd)
+          .split('-')
+          .map(Number);
+  
+        const date = new Date(
+          year,
+          month - 1,
+          day,
+          23,
+          59,
+          59,
+          999
+        );
+  
+        const milliseconds = date.getTime();
+  
+        return Number.isFinite(milliseconds)
+          ? milliseconds
+          : null;
       };
   
       const formatDateDDMMYYYY = (ymd) => {
         if (!ymd) return '';
-        const [y, m, d] = String(ymd).split('-');
-        return `${d}-${m}-${y}`;
+  
+        const [year, month, day] = String(ymd).split('-');
+  
+        if (!year || !month || !day) {
+          return '';
+        }
+  
+        return `${day}-${month}-${year}`;
       };
   
       const issueShipFromMs = startOfDayMs(issueShipDateFrom);
       const issueShipToMs = endOfDayMs(issueShipDateTo);
+  
       const receiveShipFromMs = startOfDayMs(receiveShipDateFrom);
       const receiveShipToMs = endOfDayMs(receiveShipDateTo);
   
+      /* =====================================================
+         Load Box และ Group ข้อมูล
+      ===================================================== */
+  
       let lastId = null;
+  
       const groupMap = new Map();
   
       while (true) {
         const boxes = await prisma.box.findMany({
           where: {
             status: 'use',
-        
+  
             // เอาเฉพาะ Box ที่ยังไม่ถูก Receive
             receiveId: null,
-        
-            ...(lastId ? { id: { lt: lastId } } : {}),
+  
+            ...(lastId
+              ? {
+                  id: {
+                    lt: lastId,
+                  },
+                }
+              : {}),
           },
+  
           include: {
             HeaderIssue: {
               include: {
                 User: true,
-                Group: { select: { name: true } },
+  
+                Group: {
+                  select: {
+                    name: true,
+                  },
+                },
               },
             },
           },
-          orderBy: { id: 'desc' },
+  
+          orderBy: {
+            id: 'desc',
+          },
+  
           take: chunkSize,
         });
   
-        if (!boxes.length) break;
+        if (!boxes.length) {
+          break;
+        }
+  
         lastId = boxes[boxes.length - 1].id;
   
+        /*
+         * เนื่องจากเลือก receiveId: null
+         * ส่วนนี้ปกติจะได้ array ว่าง
+         * แต่เก็บไว้เพื่อรองรับ filter Receive เดิม
+         */
         const receiveIds = [
-          ...new Set(boxes.map((b) => b.receiveId).filter(Boolean)),
+          ...new Set(
+            boxes
+              .map((box) => box.receiveId)
+              .filter(Boolean)
+          ),
         ];
   
         const receives = receiveIds.length
           ? await prisma.headerReceive.findMany({
-              where: { id: { in: receiveIds } },
-              include: { User: true },
+              where: {
+                id: {
+                  in: receiveIds,
+                },
+              },
+  
+              include: {
+                User: true,
+              },
             })
           : [];
   
-        const recvMap = new Map(receives.map((r) => [r.id, r]));
+        const receiveMap = new Map(
+          receives.map((receive) => [
+            receive.id,
+            receive,
+          ])
+        );
   
-        for (const b of boxes) {
-          const issue = b.HeaderIssue;
-          const recv = b.receiveId ? recvMap.get(b.receiveId) : null;
+        for (const box of boxes) {
+          const issue = box.HeaderIssue;
   
-          const shipI = issue?.sentDateByUser ?? null;
-          const shipR = recv?.receiveDateByUser ?? null;
+          const receive = box.receiveId
+            ? receiveMap.get(box.receiveId)
+            : null;
   
-          const shipIMs = shipI ? new Date(shipI).getTime() : null;
-          const shipRMs = shipR ? new Date(shipR).getTime() : null;
+          const shipmentIssue =
+            issue?.sentDateByUser ?? null;
+  
+          const shipmentReceive =
+            receive?.receiveDateByUser ?? null;
+  
+          const shipmentIssueMs = shipmentIssue
+            ? new Date(shipmentIssue).getTime()
+            : null;
+  
+          const shipmentReceiveMs = shipmentReceive
+            ? new Date(shipmentReceive).getTime()
+            : null;
   
           const row = {
-            itemNo: b.itemNo ?? '',
-            itemName: b.itemName ?? '',
-            dieNo: b.dieNo ?? '',
-            qty: Number(b.qty || 0),
+            itemNo: norm(box.itemNo),
+            itemName: norm(box.itemName),
+            dieNo: norm(box.dieNo),
   
-            vendor: issue?.vender ?? '',
-            controlLot: issue?.controlLot ?? '',
-            group: issue?.Group?.name ?? '',
-            issueNo: issue?.issueLotNo ?? '',
-            receiveNo: recv?.receiveLotNo ?? '',
-            boxState: b.BoxState ?? '',
+            qty: Number(box.qty || 0),
+  
+            vendor: norm(issue?.vender),
+            controlLot: norm(issue?.controlLot),
+  
+            group: norm(issue?.Group?.name),
+            issueNo: norm(issue?.issueLotNo),
+  
+            receiveNo: norm(receive?.receiveLotNo),
+  
+            boxState: norm(box.BoxState),
           };
   
-          if (itemNo && row.itemNo !== itemNo) continue;
-          if (itemName && row.itemName !== itemName) continue;
-          if (vendor && row.vendor !== vendor) continue;
-          if (controlLot && row.controlLot !== controlLot) continue;
-          if (groupName && row.group !== groupName) continue;
-          if (issueNo && row.issueNo !== issueNo) continue;
-          if (receiveNo && row.receiveNo !== receiveNo) continue;
-          if (boxState && normLower(row.boxState) !== normLower(boxState)) continue;
+          /* =================================================
+             Filters
+          ================================================= */
+  
+          if (
+            itemNo &&
+            row.itemNo !== norm(itemNo)
+          ) {
+            continue;
+          }
+  
+          if (
+            itemName &&
+            row.itemName !== norm(itemName)
+          ) {
+            continue;
+          }
+  
+          if (
+            vendor &&
+            row.vendor !== norm(vendor)
+          ) {
+            continue;
+          }
+  
+          if (
+            controlLot &&
+            row.controlLot !== norm(controlLot)
+          ) {
+            continue;
+          }
+  
+          if (
+            groupName &&
+            row.group !== norm(groupName)
+          ) {
+            continue;
+          }
+  
+          if (
+            issueNo &&
+            row.issueNo !== norm(issueNo)
+          ) {
+            continue;
+          }
+  
+          if (
+            receiveNo &&
+            row.receiveNo !== norm(receiveNo)
+          ) {
+            continue;
+          }
+  
+          if (
+            boxState &&
+            normLower(row.boxState) !== normLower(boxState)
+          ) {
+            continue;
+          }
+  
+          /* Shipment Date Issue */
   
           if (issueShipFromMs != null) {
-            if (shipIMs == null || shipIMs < issueShipFromMs) continue;
+            if (
+              shipmentIssueMs == null ||
+              shipmentIssueMs < issueShipFromMs
+            ) {
+              continue;
+            }
           }
   
           if (issueShipToMs != null) {
-            if (shipIMs == null || shipIMs > issueShipToMs) continue;
+            if (
+              shipmentIssueMs == null ||
+              shipmentIssueMs > issueShipToMs
+            ) {
+              continue;
+            }
           }
   
+          /* Shipment Date Receive */
+  
           if (receiveShipFromMs != null) {
-            if (shipRMs == null || shipRMs < receiveShipFromMs) continue;
+            if (
+              shipmentReceiveMs == null ||
+              shipmentReceiveMs < receiveShipFromMs
+            ) {
+              continue;
+            }
           }
   
           if (receiveShipToMs != null) {
-            if (shipRMs == null || shipRMs > receiveShipToMs) continue;
+            if (
+              shipmentReceiveMs == null ||
+              shipmentReceiveMs > receiveShipToMs
+            ) {
+              continue;
+            }
           }
   
-          const key = `${row.itemNo}||${row.itemName}||${row.dieNo}`;
+          /* =================================================
+             Group by:
+             controlLot + itemNo + itemName + dieNo
+          ================================================= */
   
-          if (!groupMap.has(key)) {
-            groupMap.set(key, {
+          const groupKey = JSON.stringify([
+            row.controlLot,
+            row.itemNo,
+            row.itemName,
+            row.dieNo,
+          ]);
+  
+          if (!groupMap.has(groupKey)) {
+            groupMap.set(groupKey, {
+              controlLot: row.controlLot,
               itemNo: row.itemNo,
               itemName: row.itemName,
               dieNo: row.dieNo,
+  
               qty: 0,
               totalUnit: 0,
             });
           }
   
-          const g = groupMap.get(key);
-          g.qty += row.qty;
-          g.totalUnit += 1;
+          const groupedRow = groupMap.get(groupKey);
+  
+          // Sum QTY
+          groupedRow.qty += row.qty;
+  
+          // Count BOX
+          groupedRow.totalUnit += 1;
         }
   
-        if (boxes.length < chunkSize) break;
+        if (boxes.length < chunkSize) {
+          break;
+        }
       }
+  
+      /* =====================================================
+         Sort และเตรียมข้อมูลสำหรับพิมพ์
+      ===================================================== */
   
       const printRows = Array.from(groupMap.values())
         .sort((a, b) => {
-          const byName = a.itemName.localeCompare(b.itemName);
-          if (byName !== 0) return byName;
+          // 1. Control Lot
+          const byControlLot = norm(a.controlLot).localeCompare(
+            norm(b.controlLot),
+            undefined,
+            {
+              numeric: true,
+              sensitivity: 'base',
+            }
+          );
   
-          const byItemNo = a.itemNo.localeCompare(b.itemNo);
-          if (byItemNo !== 0) return byItemNo;
+          if (byControlLot !== 0) {
+            return byControlLot;
+          }
   
-          return a.dieNo.localeCompare(b.dieNo);
+          // 2. Item Name
+          const byItemName = norm(a.itemName).localeCompare(
+            norm(b.itemName),
+            undefined,
+            {
+              numeric: true,
+              sensitivity: 'base',
+            }
+          );
+  
+          if (byItemName !== 0) {
+            return byItemName;
+          }
+  
+          // 3. Item No
+          const byItemNo = norm(a.itemNo).localeCompare(
+            norm(b.itemNo),
+            undefined,
+            {
+              numeric: true,
+              sensitivity: 'base',
+            }
+          );
+  
+          if (byItemNo !== 0) {
+            return byItemNo;
+          }
+  
+          // 4. Die No
+          return norm(a.dieNo).localeCompare(
+            norm(b.dieNo),
+            undefined,
+            {
+              numeric: true,
+              sensitivity: 'base',
+            }
+          );
         })
-        .map((x, index) => ({
+        .map((groupedRow, index) => ({
           no: index + 1,
-          poNo: x.dieNo,
-          partNo: x.itemNo,
-          partName: x.itemName,
-          qtyOut: x.qty,
+  
+          // Column P/O NO
+          poNo: groupedRow.dieNo,
+  
+          // ถ้า Control Lot เป็น Normal ให้แสดงว่าง
+          controlLot:
+            normLower(groupedRow.controlLot) === 'normal'
+              ? ''
+              : groupedRow.controlLot,
+  
+          // PART NO
+          partNo: groupedRow.itemNo,
+  
+          // PART NAME
+          partName: groupedRow.itemName,
+  
+          // QTY OUT
+          qtyOut: groupedRow.qty,
+  
           unit: 'PCS',
-          totalUnit: `${x.totalUnit} BOX`,
+  
+          // จำนวน Box
+          totalUnit: `${groupedRow.totalUnit} BOX`,
         }));
   
-      const maxRows = 13;
+      /* =====================================================
+         แบ่งหน้าละ 13 แถว
+      ===================================================== */
   
-      const tableRowsHtml = Array.from({ length: maxRows }).map((_, i) => {
-        const r = printRows[i];
+      const pageGroups = [];
+  
+      for (
+        let index = 0;
+        index < printRows.length;
+        index += rowsPerPage
+      ) {
+        pageGroups.push(
+          printRows.slice(
+            index,
+            index + rowsPerPage
+          )
+        );
+      }
+  
+      // กรณีไม่มีข้อมูล ให้สร้างเอกสารเปล่า 1 หน้า
+      if (pageGroups.length === 0) {
+        pageGroups.push([]);
+      }
+  
+      /* =====================================================
+         สร้าง HTML แต่ละหน้า
+      ===================================================== */
+  
+      const renderPage = (rows) => {
+        const tableRowsHtml = Array.from({
+          length: rowsPerPage,
+        })
+          .map((_, rowIndex) => {
+            const row = rows[rowIndex];
+  
+            return `
+              <tr>
+                <!-- 1: NO -->
+                <td>
+                  ${row ? escapeHtml(row.no) : ''}
+                </td>
+  
+                <!-- 2: P/O NO = Die No -->
+                <td>
+                  ${row ? escapeHtml(row.poNo) : ''}
+                </td>
+  
+                <!-- 3: Control Lot -->
+                <td class="control-lot-cell">
+                  ${
+                    row
+                      ? escapeHtml(row.controlLot)
+                      : ''
+                  }
+                </td>
+  
+                <!-- 4: PART NO -->
+                <td>
+                  ${
+                    row
+                      ? escapeHtml(row.partNo)
+                      : ''
+                  }
+                </td>
+  
+                <!-- 5: PART NAME -->
+                <td>
+                  ${
+                    row
+                      ? escapeHtml(row.partName)
+                      : ''
+                  }
+                </td>
+  
+                <!-- 6: QTY OUT -->
+                <td>
+                  ${
+                    row
+                      ? escapeHtml(
+                          formatNumber(row.qtyOut)
+                        )
+                      : ''
+                  }
+                </td>
+  
+                <!-- 7: UNIT -->
+                <td>
+                  ${row ? escapeHtml(row.unit) : ''}
+                </td>
+  
+                <!-- 8: TOTAL UNIT -->
+                <td>
+                  ${
+                    row
+                      ? escapeHtml(row.totalUnit)
+                      : ''
+                  }
+                </td>
+  
+                <!-- RANDOM SAMPLING 1-8 -->
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+  
+                <!-- SIGNATURE COLUMNS -->
+                <td></td>
+                <td></td>
+                <td></td>
+              </tr>
+            `;
+          })
+          .join('');
   
         return `
-          <tr>
-            <td>${r ? escapeHtml(r.no) : ''}</td>
-            <td>${r ? escapeHtml(r.poNo) : ''}</td>
-            <td></td>
-            <td>${r ? escapeHtml(r.partNo) : ''}</td>
-            <td>${r ? escapeHtml(r.partName) : ''}</td>
-            <td>${r ? escapeHtml(formatNumber(r.qtyOut)) : ''}</td>
-            <td>${r ? escapeHtml(r.unit) : ''}</td>
-            <td>${r ? escapeHtml(r.totalUnit) : ''}</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
+          <section class="page">
+            <div class="top">
+              <div></div>
+  
+              <div class="title">
+                <div class="company">
+                  NMB-Minebea Thai Ltd.
+                </div>
+  
+                <div class="thai">
+                  ใบผ่านงาน HOME WORK (ขาออก)
+                </div>
+  
+                <div class="eng">
+                  HOME WORK GATE PASS (OUT)
+                </div>
+  
+                <div class="division">
+                  DIVISION................PRESS...................
+                </div>
+              </div>
+  
+              <div class="form-no">
+                <div>
+                  แบบฟอร์มที่&nbsp;&nbsp; 1
+                </div>
+  
+                <div>
+                  FROM&nbsp;&nbsp; 1
+                </div>
+              </div>
+            </div>
+  
+            <div class="header-grid">
+              <table class="box-table">
+                <tr>
+                  <th>
+                    ชื่อเวนเดอร์
+                    <br>
+                    VENDOR NAME
+                  </th>
+  
+                  <th>
+                    เลขที่เวนเดอร์
+                    <br>
+                    VENDOR CODE
+                  </th>
+                </tr>
+  
+                <tr>
+                  <td>
+                    ${escapeHtml(vendor || '')}
+                  </td>
+  
+                  <td></td>
+                </tr>
+              </table>
+  
+              <table class="check-table">
+                <tr>
+                  <td>
+                    <span class="check-box"></span>
+                    OVER ISSUED
+                  </td>
+                </tr>
+  
+                <tr>
+                  <td>
+                    <span class="check-box"></span>
+                    NG TO REWORK
+                  </td>
+                </tr>
+  
+                <tr>
+                  <td>
+                    <span class="check-box"></span>
+                    NIGHT SHIFT
+                  </td>
+                </tr>
+              </table>
+  
+              <table class="box-table">
+                <tr>
+                  <th>
+                    รหัสสินค้า
+                    <br>
+                    ITEM NAME
+                  </th>
+  
+                  <th>
+                    เลขที่สินค้า
+                    <br>
+                    ITEM NO
+                  </th>
+                </tr>
+  
+                <tr>
+                  <td></td>
+                  <td></td>
+                </tr>
+              </table>
+  
+              <table class="box-table">
+                <tr>
+                  <th>
+                    เลขที่รุ่น
+                    <br>
+                    MODEL NO
+                  </th>
+                </tr>
+  
+                <tr>
+                  <td></td>
+                </tr>
+              </table>
+  
+              <div class="right-info">
+                <div>
+                  เลขที่ (NO)&nbsp;&nbsp;
+                  <span class="dot"></span>
+                </div>
+  
+                <div>
+                  วันที่ (DATE)&nbsp;&nbsp;
+                  <span class="dot">
+                    ${escapeHtml(
+                      formatDateDDMMYYYY(
+                        issueShipDateFrom
+                      )
+                    )}
+                  </span>
+                </div>
+  
+                <div>
+                  เวลา (TIME)&nbsp;&nbsp;
+                  <span class="dot"></span>
+                </div>
+              </div>
+            </div>
+  
+            <table class="main-table">
+              <thead>
+                <tr>
+                  <th rowspan="2" class="no">
+                    ลำดับที่
+                    <br>
+                    NO.
+                  </th>
+  
+                  <th rowspan="2" class="po">
+                    เลขที่ P/O
+                    <br>
+                    P/O NO
+                  </th>
+  
+                  <th rowspan="2" class="qty">
+                    จำนวน
+                    <br>
+                    QTY
+                  </th>
+  
+                  <th rowspan="2" class="partno">
+                    เลขที่ชิ้นงาน
+                    <br>
+                    PART NO
+                  </th>
+  
+                  <th rowspan="2" class="desc">
+                    ชื่องาน/รายละเอียด
+                    <br>
+                    PART NAME/
+                    <br>
+                    DESCRIPTION
+                  </th>
+  
+                  <th rowspan="2" class="qtyout">
+                    จำนวนส่งออก
+                    <br>
+                    QTY (OUT)
+                  </th>
+  
+                  <th rowspan="2" class="unit">
+                    หน่วยนับ
+                    <br>
+                    UNIT
+                  </th>
+  
+                  <th rowspan="2" class="totalunit">
+                    จำนวนภาชนะบรรจุ
+                    <br>
+                    TOTAL UNIT
+                  </th>
+  
+                  <th colspan="8">
+                    จำนวนสุ่มตรวจ
+                    (RANDOM SAMPLING CHECK)
+                  </th>
+  
+                  <th rowspan="2" class="sign">
+                    ส่งโดยฝ่ายผลิต
+                    <br>
+                    SENT BY
+                    <br>
+                    PRODUCTION
+                  </th>
+  
+                  <th rowspan="2" class="sign">
+                    รับโดยเวนเดอร์
+                    <br>
+                    RECEIVED BY
+                    <br>
+                    VENDOR
+                  </th>
+  
+                  <th rowspan="2" class="sign">
+                    ตรวจสอบสินค้าโดย รปภ
+                    <br>
+                    CHECKED BY
+                    <br>
+                    GUARDMAN
+                  </th>
+                </tr>
+  
+                <tr>
+                  <th class="sample">1</th>
+                  <th class="sample">2</th>
+                  <th class="sample">3</th>
+                  <th class="sample">4</th>
+                  <th class="sample">5</th>
+                  <th class="sample">6</th>
+                  <th class="sample">7</th>
+                  <th class="sample">8</th>
+                </tr>
+              </thead>
+  
+              <tbody>
+                ${tableRowsHtml}
+              </tbody>
+            </table>
+  
+            <div class="footer">
+              <div class="note">
+                <div>
+                  ต้นฉบับ
+                  &nbsp;&nbsp;&nbsp;&nbsp;
+                  : ฝ่ายบัญชี
+                </div>
+  
+                <div>
+                  ORIGINAL
+                  &nbsp;&nbsp;
+                  : ACCOUNT DIVISION
+                </div>
+  
+                <div>
+                  หมายเหตุ
+                  &nbsp;&nbsp;&nbsp;&nbsp;
+                  : 1. ห้ามทำการลบ,ขีด,ฆ่า
+                  ข้อมูลใด ๆทั้งสิ้น
+                </div>
+  
+                <div class="small">
+                  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                  NOT ALLOW TO DELETE OR CORRECT ANY DATA
+                </div>
+              </div>
+  
+              <div class="approve">
+                <div>
+                  อนุมัติโดย
+                  &nbsp;&nbsp;
+                  :
+                  ....................................................
+                </div>
+  
+                <div>
+                  APPROVED BY
+                  (
+                  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                  )
+                </div>
+  
+                <div>
+                  วันที่ (DATE)
+                  &nbsp;
+                  :
+                  ....................................................
+                </div>
+              </div>
+            </div>
+  
+            <div class="code">
+              M2-4239A4
+            </div>
+          </section>
         `;
-      }).join('');
+      };
+  
+      const pagesHtml = pageGroups
+        .map((rows) => renderPage(rows))
+        .join('');
+  
+      /* =====================================================
+         Full HTML
+      ===================================================== */
   
       const html = `
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset="UTF-8" />
-    <style>
-      @page {
-        size: A4 landscape;
-        margin: 8mm;
-      }
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8" />
   
-      * {
-        box-sizing: border-box;
-      }
+          <style>
+            @page {
+              size: A4 landscape;
+              margin: 8mm;
+            }
   
-      body {
-        font-family: Arial, "TH Sarabun New", sans-serif;
-        margin: 0;
-        color: #333;
-        font-size: 11px;
-      }
+            * {
+              box-sizing: border-box;
+            }
   
-      .page {
-        width: 100%;
-        min-height: 190mm;
-        position: relative;
-      }
+            html,
+            body {
+              margin: 0;
+              padding: 0;
+            }
   
-      .top {
-        display: grid;
-        grid-template-columns: 1fr 2fr 1fr;
-        align-items: start;
-        margin-bottom: 14px;
-      }
+            body {
+              font-family:
+                Arial,
+                "TH Sarabun New",
+                sans-serif;
   
-      .title {
-        text-align: center;
-        font-weight: bold;
-        line-height: 1.45;
-      }
+              color: #333;
+              font-size: 11px;
+            }
   
-      .title .company {
-        font-size: 23px;
-      }
+            .page {
+              width: 100%;
+              min-height: 190mm;
+              position: relative;
   
-      .title .thai {
-        font-size: 20px;
-      }
+              break-after: page;
+              page-break-after: always;
+            }
   
-      .title .eng {
-        font-size: 17px;
-      }
+            .page:last-child {
+              break-after: auto;
+              page-break-after: auto;
+            }
   
-      .title .division {
-        font-size: 16px;
-        margin-top: 6px;
-      }
+            .top {
+              display: grid;
+              grid-template-columns: 1fr 2fr 1fr;
+              align-items: start;
+              margin-bottom: 14px;
+            }
   
-      .form-no {
-        text-align: right;
-        line-height: 2.3;
-        font-size: 12px;
-        padding-top: 8px;
-      }
+            .title {
+              text-align: center;
+              font-weight: bold;
+              line-height: 1.45;
+            }
   
-      .header-grid {
-        display: grid;
-        grid-template-columns: 2.1fr 1.6fr 2fr 0.9fr 2.2fr;
-        gap: 26px;
-        align-items: start;
-        margin-bottom: 16px;
-      }
+            .title .company {
+              font-size: 23px;
+            }
   
-      table {
-        border-collapse: collapse;
-        width: 100%;
-      }
+            .title .thai {
+              font-size: 20px;
+            }
   
-      .box-table td,
-      .box-table th {
-        border: 1px solid #444;
-        height: 34px;
-        text-align: center;
-        vertical-align: middle;
-      }
+            .title .eng {
+              font-size: 17px;
+            }
   
-      .box-table th {
-        font-weight: normal;
-        font-size: 13px;
-      }
+            .title .division {
+              font-size: 16px;
+              margin-top: 6px;
+            }
   
-      .check-table td {
-        border: 1px solid #444;
-        height: 26px;
-        padding: 2px 8px;
-      }
+            .form-no {
+              text-align: right;
+              line-height: 2.3;
+              font-size: 12px;
+              padding-top: 8px;
+            }
   
-      .check-box {
-        display: inline-block;
-        width: 22px;
-        height: 20px;
-        border: 1px solid #444;
-        margin-right: 22px;
-        vertical-align: middle;
-      }
+            .header-grid {
+              display: grid;
   
-      .right-info {
-        line-height: 3.3;
-        font-size: 13px;
-        white-space: nowrap;
-      }
+              grid-template-columns:
+                2.1fr
+                1.6fr
+                2fr
+                0.9fr
+                2.2fr;
   
-      .dot {
-        display: inline-block;
-        border-bottom: 1px dotted #555;
-        width: 165px;
-        height: 18px;
-        line-height: 18px;
-        text-align: center;
-      }
+              gap: 26px;
+              align-items: start;
+              margin-bottom: 16px;
+            }
   
-      .main-table th,
-      .main-table td {
-        border: 1px solid #444;
-        text-align: center;
-        vertical-align: middle;
-      }
+            table {
+              border-collapse: collapse;
+              width: 100%;
+            }
   
-      .main-table th {
-        height: 34px;
-        font-weight: normal;
-        line-height: 1.35;
-        font-size: 11px;
-      }
+            .box-table td,
+            .box-table th {
+              border: 1px solid #444;
+              height: 34px;
+              text-align: center;
+              vertical-align: middle;
+            }
   
-      .main-table td {
-        height: 26px;
-        padding: 1px 3px;
-        font-size: 10px;
-        word-break: break-word;
-      }
+            .box-table th {
+              font-weight: normal;
+              font-size: 13px;
+            }
   
-      .main-table .no { width: 34px; }
-      .main-table .po { width: 78px; }
-      .main-table .qty { width: 58px; }
-      .main-table .partno { width: 112px; }
-      .main-table .desc { width: 122px; }
-      .main-table .qtyout { width: 58px; }
-      .main-table .unit { width: 50px; }
-      .main-table .totalunit { width: 88px; }
-      .main-table .sample { width: 38px; }
-      .main-table .sign { width: 86px; }
+            .check-table td {
+              border: 1px solid #444;
+              height: 26px;
+              padding: 2px 8px;
+            }
   
-      .footer {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        margin-top: 10px;
-        font-size: 13px;
-      }
+            .check-box {
+              display: inline-block;
+              width: 22px;
+              height: 20px;
+              border: 1px solid #444;
+              margin-right: 22px;
+              vertical-align: middle;
+            }
   
-      .note {
-        line-height: 1.8;
-      }
+            .right-info {
+              line-height: 3.3;
+              font-size: 13px;
+              white-space: nowrap;
+            }
   
-      .approve {
-        justify-self: end;
-        width: 310px;
-        line-height: 2.4;
-      }
+            .dot {
+              display: inline-block;
+              border-bottom: 1px dotted #555;
+              width: 165px;
+              height: 18px;
+              line-height: 18px;
+              text-align: center;
+            }
   
-      .small {
-        font-size: 10px;
-      }
+            .main-table {
+              table-layout: fixed;
+            }
   
-      .code {
-        position: absolute;
-        right: 0;
-        bottom: 0;
-        font-size: 9px;
-      }
-    </style>
-  </head>
+            .main-table th,
+            .main-table td {
+              border: 1px solid #444;
+              text-align: center;
+              vertical-align: middle;
+            }
   
-  <body>
-    <div class="page">
+            .main-table th {
+              height: 34px;
+              font-weight: normal;
+              line-height: 1.35;
+              font-size: 11px;
+            }
   
-      <div class="top">
-        <div></div>
+            .main-table td {
+              height: 26px;
+              padding: 1px 3px;
+              font-size: 10px;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }
   
-        <div class="title">
-          <div class="company">NMB-Minebea Thai Ltd.</div>
-          <div class="thai">ใบผ่านงาน HOME WORK (ขาออก)</div>
-          <div class="eng">HOME WORK GATE PASS (OUT)</div>
-          <div class="division">DIVISION................PRESS...................</div>
-        </div>
+            .main-table td.control-lot-cell {
+              font-size: 9px;
+              line-height: 1.1;
+            }
   
-        <div class="form-no">
-          <div>แบบฟอร์มที่&nbsp;&nbsp; 1</div>
-          <div>FROM&nbsp;&nbsp; 1</div>
-        </div>
-      </div>
+            .main-table .no {
+              width: 34px;
+            }
   
-      <div class="header-grid">
-        <table class="box-table">
-          <tr>
-            <th>ชื่อเวนเดอร์<br>VENDOR NAME</th>
-            <th>เลขที่เวนเดอร์<br>VENDOR CODE</th>
-          </tr>
-          <tr>
-            <td>${escapeHtml(vendor || '')}</td>
-            <td></td>
-          </tr>
-        </table>
+            .main-table .po {
+              width: 78px;
+            }
   
-        <table class="check-table">
-          <tr><td><span class="check-box"></span>OVER ISSUED</td></tr>
-          <tr><td><span class="check-box"></span>NG TO REWORK</td></tr>
-          <tr><td><span class="check-box"></span>NIGHT SHIFT</td></tr>
-        </table>
+            .main-table .qty {
+              width: 58px;
+            }
   
-        <table class="box-table">
-          <tr>
-            <th>รหัสสินค้า<br>ITEM NAME</th>
-            <th>เลขที่สินค้า<br>ITEM NO</th>
-          </tr>
-          <tr>
-            <td></td>
-            <td></td>
-          </tr>
-        </table>
+            .main-table .partno {
+              width: 112px;
+            }
   
-        <table class="box-table">
-          <tr>
-            <th>เลขที่รุ่น<br>MODEL NO</th>
-          </tr>
-          <tr>
-            <td></td>
-          </tr>
-        </table>
+            .main-table .desc {
+              width: 122px;
+            }
   
-        <div class="right-info">
-          <div>เลขที่ (NO)&nbsp;&nbsp;<span class="dot"></span></div>
-          <div>วันที่ (DATE)&nbsp;&nbsp;<span class="dot">${formatDateDDMMYYYY(issueShipDateFrom)}</span></div>
-          <div>เวลา (TIME)&nbsp;&nbsp;<span class="dot"></span></div>
-        </div>
-      </div>
+            .main-table .qtyout {
+              width: 58px;
+            }
   
-      <table class="main-table">
-        <thead>
-          <tr>
-            <th rowspan="2" class="no">ลำดับที่<br>NO.</th>
-            <th rowspan="2" class="po">เลขที่ P/O<br>P/O NO</th>
-            <th rowspan="2" class="qty">จำนวน<br>QTY</th>
-            <th rowspan="2" class="partno">เลขที่ชิ้นงาน<br>PART NO</th>
-            <th rowspan="2" class="desc">ชื่องาน/รายละเอียด<br>PART NAME/<br>DESCRIPTION</th>
-            <th rowspan="2" class="qtyout">จำนวนส่งออก<br>QTY (OUT)</th>
-            <th rowspan="2" class="unit">หน่วยนับ<br>UNIT</th>
-            <th rowspan="2" class="totalunit">จำนวนภาชนะบรรจุ<br>TOTAL UNIT</th>
-            <th colspan="8">จำนวนสุ่มตรวจ (RANDOM SAMPLING CHECK)</th>
-            <th rowspan="2" class="sign">ส่งโดยฝ่ายผลิต<br>SENT BY<br>PRODUCTION</th>
-            <th rowspan="2" class="sign">รับโดยเวนเดอร์<br>RECEIVED BY<br>VENDOR</th>
-            <th rowspan="2" class="sign">ตรวจสอบสินค้าโดย รปภ<br>CHECKED BY<br>GUARDMAN</th>
-          </tr>
-          <tr>
-            <th class="sample">1</th>
-            <th class="sample">2</th>
-            <th class="sample">3</th>
-            <th class="sample">4</th>
-            <th class="sample">5</th>
-            <th class="sample">6</th>
-            <th class="sample">7</th>
-            <th class="sample">8</th>
-          </tr>
-        </thead>
+            .main-table .unit {
+              width: 50px;
+            }
   
-        <tbody>
-          ${tableRowsHtml}
-        </tbody>
-      </table>
+            .main-table .totalunit {
+              width: 88px;
+            }
   
-      <div class="footer">
-        <div class="note">
-          <div>ต้นฉบับ &nbsp;&nbsp;&nbsp;&nbsp; : ฝ่ายบัญชี</div>
-          <div>ORIGINAL &nbsp;&nbsp; : ACCOUNT DIVISION</div>
-          <div>หมายเหตุ &nbsp;&nbsp;&nbsp;&nbsp; : 1. ห้ามทำการลบ,ขีด,ฆ่า ข้อมูลใด ๆทั้งสิ้น</div>
-          <div class="small">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NOT ALLOW TO DELETE OR CORRECT ANY DATA</div>
-        </div>
+            .main-table .sample {
+              width: 38px;
+            }
   
-        <div class="approve">
-          <div>อนุมัติโดย &nbsp;&nbsp; : ....................................................</div>
-          <div>APPROVED BY (&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;)</div>
-          <div>วันที่ (DATE)&nbsp; : ....................................................</div>
-        </div>
-      </div>
+            .main-table .sign {
+              width: 86px;
+            }
   
-      <div class="code">M2-4239A4</div>
-    </div>
-  </body>
-  </html>
+            .footer {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              margin-top: 10px;
+              font-size: 13px;
+            }
+  
+            .note {
+              line-height: 1.8;
+            }
+  
+            .approve {
+              justify-self: end;
+              width: 310px;
+              line-height: 2.4;
+            }
+  
+            .small {
+              font-size: 10px;
+            }
+  
+            .code {
+              position: absolute;
+              right: 0;
+              bottom: -1px;
+              font-size: 9px;
+            }
+          </style>
+        </head>
+  
+        <body>
+          ${pagesHtml}
+        </body>
+        </html>
       `;
+  
+      /* =====================================================
+         Create PDF
+      ===================================================== */
   
       browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+        ],
       });
   
       const page = await browser.newPage();
@@ -2599,12 +3221,19 @@ module.exports = {
         waitUntil: 'networkidle0',
       });
   
+      await page.evaluate(async () => {
+        if (document.fonts?.ready) {
+          await document.fonts.ready;
+        }
+      });
+  
       const pdfBuffer = await page.pdf({
         format: 'A4',
         landscape: true,
         printBackground: true,
         preferCSSPageSize: true,
         scale: 0.92,
+  
         margin: {
           top: '8mm',
           right: '8mm',
@@ -2613,8 +3242,13 @@ module.exports = {
         },
       });
   
+      /* =====================================================
+         Download filename
+      ===================================================== */
+  
       const now = new Date();
-      const pad = (n) => String(n).padStart(2, '0');
+      const pad = (number) =>
+        String(number).padStart(2, '0');
   
       const timeStamp =
         now.getFullYear() +
@@ -2632,14 +3266,29 @@ module.exports = {
       const fileName =
         `HomeWorkGatePass_${safeVendor}_${issueShipDateFrom || 'Print'}_${timeStamp}.pdf`;
   
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      return res.send(pdfBuffer);
+      res.setHeader(
+        'Content-Type',
+        'application/pdf'
+      );
   
-    } catch (e) {
-      return res.status(500).send({ error: e.message });
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${fileName}"`
+      );
+  
+      return res.send(pdfBuffer);
+    } catch (error) {
+      console.error('downloadPdf error:', error);
+  
+      return res.status(500).send({
+        error:
+          error?.message ||
+          'Cannot generate PDF',
+      });
     } finally {
-      if (browser) await browser.close();
+      if (browser) {
+        await browser.close();
+      }
     }
   }
 
