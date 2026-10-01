@@ -764,7 +764,6 @@ module.exports = {
   
 
 
-
   printTestPdf: async (req, res) => {
     let browser;
   
@@ -772,7 +771,12 @@ module.exports = {
       const { default: puppeteer } = await import('puppeteer');
   
       const chunkSize = 500;
-      const rowsPerPage = 13;
+  
+      // ตารางมีทั้งหมด 13 แถว
+      // 12 แถวแรก = ข้อมูล
+      // แถวที่ 13 = TOTAL
+      const dataRowsPerPage = 12;
+      const tableRowsPerPage = 13;
   
       const { filters } = req.body || {};
   
@@ -937,11 +941,10 @@ module.exports = {
         lastId = boxes[boxes.length - 1].id;
   
         /*
-         * เนื่องจาก query เลือก receiveId: null แล้ว
-         * receiveIds จะเป็น array ว่างตามปกติ
+         * ตอนนี้ query ใช้ receiveId: null
+         * ดังนั้น receiveIds ปกติจะเป็น array ว่าง
          *
-         * เก็บโครงสร้างนี้ไว้เพื่อไม่ให้กระทบ filter เดิม
-         * ในกรณีที่อนาคตนำ receiveId: null ออก
+         * ยังเก็บ logic นี้ไว้เพื่อรองรับ filter เดิม
          */
         const receiveIds = [
           ...new Set(
@@ -973,10 +976,6 @@ module.exports = {
         );
   
         for (const box of boxes) {
-          /*
-           * HeaderIssue ถูกดึงมาจาก relation แล้ว
-           * ไม่ต้อง query HeaderIssue ซ้ำด้วย issueId
-           */
           const issue = box.HeaderIssue;
   
           const receive = box.receiveId
@@ -1016,7 +1015,7 @@ module.exports = {
           };
   
           /* =================================================
-             Apply filters เหมือน Report/Excel
+             Apply filters
           ================================================= */
   
           if (
@@ -1221,32 +1220,34 @@ module.exports = {
         .map((groupedRow, index) => ({
           no: index + 1,
   
-          // Column P/O NO
+          // P/O NO = Die No
           poNo: groupedRow.dieNo,
   
-          // Column ที่ 3 เดิม QTY
+          // Normal อย่างเดียวให้เป็นช่องว่าง
+          // Normal-M1, Normal-M2 ฯลฯ ยังแสดงตามปกติ
           controlLot:
-          normLower(groupedRow.controlLot) === 'normal'
-            ? ''
-            : groupedRow.controlLot,
+            normLower(groupedRow.controlLot) === 'normal'
+              ? ''
+              : groupedRow.controlLot,
   
-          // PART NO
           partNo: groupedRow.itemNo,
   
-          // PART NAME / DESCRIPTION
           partName: groupedRow.itemName,
   
-          // QTY OUT
           qtyOut: groupedRow.qty,
   
           unit: 'PCS',
   
-          // Count BOX
-          totalUnit: `${groupedRow.totalUnit} BOX`,
+          // เก็บเป็น number ก่อน เพื่อใช้รวม TOTAL
+          totalUnit: groupedRow.totalUnit,
         }));
   
       /* =====================================================
-         Split data: 13 rows per page
+         Split data
+  
+         1 หน้า:
+         Row 1-12  = Data
+         Row 13    = TOTAL
       ===================================================== */
   
       const pageGroups = [];
@@ -1254,19 +1255,17 @@ module.exports = {
       for (
         let index = 0;
         index < printRows.length;
-        index += rowsPerPage
+        index += dataRowsPerPage
       ) {
         pageGroups.push(
           printRows.slice(
             index,
-            index + rowsPerPage
+            index + dataRowsPerPage
           )
         );
       }
   
-      /*
-       * ถ้าไม่มีข้อมูล ให้สร้างเอกสารเปล่า 1 หน้า
-       */
+      // ถ้าไม่มีข้อมูล ให้ยังสร้างเอกสาร 1 หน้า
       if (pageGroups.length === 0) {
         pageGroups.push([]);
       }
@@ -1275,13 +1274,30 @@ module.exports = {
          Render one full A4 page
       ===================================================== */
   
-      const renderPage = (
-        rows,
-        pageNumber,
-        totalPages
-      ) => {
-        const tableRowsHtml = Array.from({
-          length: rowsPerPage,
+      const renderPage = (rows) => {
+  
+        /* -----------------------------------------------------
+           TOTAL ของข้อมูลในหน้านี้
+        ----------------------------------------------------- */
+  
+        const pageTotalQty = rows.reduce(
+          (sum, row) =>
+            sum + Number(row.qtyOut || 0),
+          0
+        );
+  
+        const pageTotalBox = rows.reduce(
+          (sum, row) =>
+            sum + Number(row.totalUnit || 0),
+          0
+        );
+  
+        /* -----------------------------------------------------
+           Data Row 1-12
+        ----------------------------------------------------- */
+  
+        const dataRowsHtml = Array.from({
+          length: dataRowsPerPage,
         })
           .map((_, rowIndex) => {
             const row = rows[rowIndex];
@@ -1293,7 +1309,7 @@ module.exports = {
                   ${row ? escapeHtml(row.no) : ''}
                 </td>
   
-                <!-- 2: P/O NO = Die No -->
+                <!-- 2: P/O NO -->
                 <td>
                   ${row ? escapeHtml(row.poNo) : ''}
                 </td>
@@ -1345,7 +1361,9 @@ module.exports = {
                 <td>
                   ${
                     row
-                      ? escapeHtml(row.totalUnit)
+                      ? escapeHtml(
+                          `${formatNumber(row.totalUnit)} BOX`
+                        )
                       : ''
                   }
                 </td>
@@ -1360,7 +1378,7 @@ module.exports = {
                 <td></td>
                 <td></td>
   
-                <!-- SIGNATURE COLUMNS -->
+                <!-- SIGNATURE -->
                 <td></td>
                 <td></td>
                 <td></td>
@@ -1369,8 +1387,68 @@ module.exports = {
           })
           .join('');
   
+        /* -----------------------------------------------------
+           Row 13 = TOTAL
+        ----------------------------------------------------- */
+  
+        const totalRowHtml = `
+          <tr class="total-row">
+  
+            <!-- NO -->
+            <td></td>
+  
+            <!-- P/O NO -->
+            <td></td>
+  
+            <!-- Control Lot -->
+            <td></td>
+  
+            <!-- PART NO -->
+            <td></td>
+  
+            <!-- PART NAME -->
+            <td class="total-label">
+              TOTAL
+            </td>
+  
+            <!-- QTY OUT -->
+            <td class="total-value">
+              ${escapeHtml(formatNumber(pageTotalQty))}
+            </td>
+  
+            <!-- UNIT -->
+            <td class="total-value">
+              PCS
+            </td>
+  
+            <!-- TOTAL UNIT -->
+            <td class="total-value">
+              ${escapeHtml(formatNumber(pageTotalBox))} BOX
+            </td>
+  
+            <!-- RANDOM SAMPLING 1-8 -->
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+  
+            <!-- SIGNATURE -->
+            <td></td>
+            <td></td>
+            <td></td>
+          </tr>
+        `;
+  
+        const tableRowsHtml =
+          dataRowsHtml + totalRowHtml;
+  
         return `
           <section class="page">
+  
             <div class="top">
               <div></div>
   
@@ -1404,6 +1482,7 @@ module.exports = {
             </div>
   
             <div class="header-grid">
+  
               <table class="box-table">
                 <tr>
                   <th>
@@ -1508,51 +1587,40 @@ module.exports = {
                   <span class="dot"></span>
                 </div>
               </div>
+  
             </div>
   
             <table class="main-table">
+  
               <thead>
+  
                 <tr>
-                  <th
-                    rowspan="2"
-                    class="no"
-                  >
+  
+                  <th rowspan="2" class="no">
                     ลำดับที่
                     <br>
                     NO.
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="po"
-                  >
+                  <th rowspan="2" class="po">
                     เลขที่ P/O
                     <br>
                     P/O NO
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="qty"
-                  >
+                  <th rowspan="2" class="qty">
                     จำนวน
                     <br>
                     QTY
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="partno"
-                  >
+                  <th rowspan="2" class="partno">
                     เลขที่ชิ้นงาน
                     <br>
                     PART NO
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="desc"
-                  >
+                  <th rowspan="2" class="desc">
                     ชื่องาน/รายละเอียด
                     <br>
                     PART NAME/
@@ -1560,28 +1628,19 @@ module.exports = {
                     DESCRIPTION
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="qtyout"
-                  >
+                  <th rowspan="2" class="qtyout">
                     จำนวนส่งออก
                     <br>
                     QTY (OUT)
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="unit"
-                  >
+                  <th rowspan="2" class="unit">
                     หน่วยนับ
                     <br>
                     UNIT
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="totalunit"
-                  >
+                  <th rowspan="2" class="totalunit">
                     จำนวนภาชนะบรรจุ
                     <br>
                     TOTAL UNIT
@@ -1592,10 +1651,7 @@ module.exports = {
                     (RANDOM SAMPLING CHECK)
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="sign"
-                  >
+                  <th rowspan="2" class="sign">
                     ส่งโดยฝ่ายผลิต
                     <br>
                     SENT BY
@@ -1603,10 +1659,7 @@ module.exports = {
                     PRODUCTION
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="sign"
-                  >
+                  <th rowspan="2" class="sign">
                     รับโดยเวนเดอร์
                     <br>
                     RECEIVED BY
@@ -1614,16 +1667,14 @@ module.exports = {
                     VENDOR
                   </th>
   
-                  <th
-                    rowspan="2"
-                    class="sign"
-                  >
+                  <th rowspan="2" class="sign">
                     ตรวจสอบสินค้าโดย รปภ
                     <br>
                     CHECKED BY
                     <br>
                     GUARDMAN
                   </th>
+  
                 </tr>
   
                 <tr>
@@ -1636,15 +1687,19 @@ module.exports = {
                   <th class="sample">7</th>
                   <th class="sample">8</th>
                 </tr>
+  
               </thead>
   
               <tbody>
                 ${tableRowsHtml}
               </tbody>
+  
             </table>
   
             <div class="footer">
+  
               <div class="note">
+  
                 <div>
                   ต้นฉบับ
                   &nbsp;&nbsp;&nbsp;&nbsp;
@@ -1668,9 +1723,11 @@ module.exports = {
                   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
                   NOT ALLOW TO DELETE OR CORRECT ANY DATA
                 </div>
+  
               </div>
   
               <div class="approve">
+  
                 <div>
                   อนุมัติโดย
                   &nbsp;&nbsp;
@@ -1691,28 +1748,25 @@ module.exports = {
                   :
                   ....................................................
                 </div>
-              </div>
-            </div>
   
-         
+              </div>
+  
+            </div>
   
             <div class="code">
               M2-4239A4
             </div>
+  
           </section>
         `;
       };
   
-      const totalPages = pageGroups.length;
+      /* =====================================================
+         Render all pages
+      ===================================================== */
   
       const pagesHtml = pageGroups
-        .map((rows, pageIndex) =>
-          renderPage(
-            rows,
-            pageIndex + 1,
-            totalPages
-          )
-        )
+        .map((rows) => renderPage(rows))
         .join('');
   
       /* =====================================================
@@ -1722,10 +1776,13 @@ module.exports = {
       const html = `
         <!DOCTYPE html>
         <html>
+  
         <head>
+  
           <meta charset="UTF-8" />
   
           <style>
+  
             @page {
               size: A4 landscape;
               margin: 8mm;
@@ -1751,9 +1808,6 @@ module.exports = {
               font-size: 11px;
             }
   
-            /*
-             * แต่ละ .page คือกระดาษ A4 ใหม่หนึ่งแผ่น
-             */
             .page {
               width: 100%;
               min-height: 190mm;
@@ -1770,10 +1824,12 @@ module.exports = {
   
             .top {
               display: grid;
+  
               grid-template-columns:
                 1fr 2fr 1fr;
   
               align-items: start;
+  
               margin-bottom: 14px;
             }
   
@@ -1818,7 +1874,9 @@ module.exports = {
                 2.2fr;
   
               gap: 26px;
+  
               align-items: start;
+  
               margin-bottom: 16px;
             }
   
@@ -1848,10 +1906,14 @@ module.exports = {
   
             .check-box {
               display: inline-block;
+  
               width: 22px;
               height: 20px;
+  
               border: 1px solid #444;
+  
               margin-right: 22px;
+  
               vertical-align: middle;
             }
   
@@ -1863,6 +1925,7 @@ module.exports = {
   
             .dot {
               display: inline-block;
+  
               border-bottom: 1px dotted #555;
   
               width: 165px;
@@ -1899,13 +1962,27 @@ module.exports = {
               word-break: break-word;
             }
   
-            /*
-             * Control Lot อยู่ Column 3
-             * ลดขนาดเล็กน้อยกรณีข้อความยาว
-             */
             .main-table td.control-lot-cell {
               font-size: 9px;
               line-height: 1.1;
+            }
+  
+            /* ==============================
+               TOTAL ROW
+            ============================== */
+  
+            .main-table tr.total-row td {
+              font-weight: bold;
+              font-size: 10px;
+            }
+  
+            .main-table td.total-label {
+              text-align: right;
+              padding-right: 8px;
+            }
+  
+            .main-table td.total-value {
+              font-weight: bold;
             }
   
             .main-table .no {
@@ -1950,9 +2027,12 @@ module.exports = {
   
             .footer {
               display: grid;
-              grid-template-columns: 1fr 1fr;
+  
+              grid-template-columns:
+                1fr 1fr;
   
               margin-top: 10px;
+  
               font-size: 13px;
             }
   
@@ -1962,7 +2042,9 @@ module.exports = {
   
             .approve {
               justify-self: end;
+  
               width: 310px;
+  
               line-height: 2.4;
             }
   
@@ -1972,16 +2054,21 @@ module.exports = {
   
             .code {
               position: absolute;
+  
               right: 0;
               bottom: -1px;
+  
               font-size: 9px;
             }
+  
           </style>
+  
         </head>
   
         <body>
           ${pagesHtml}
         </body>
+  
         </html>
       `;
   
@@ -2004,9 +2091,6 @@ module.exports = {
         waitUntil: 'networkidle0',
       });
   
-      /*
-       * รอ Font ในเครื่องโหลดเสร็จก่อนออก PDF
-       */
       await page.evaluate(async () => {
         if (document.fonts?.ready) {
           await document.fonts.ready;
@@ -2039,21 +2123,28 @@ module.exports = {
       );
   
       return res.send(pdfBuffer);
+  
     } catch (error) {
-      console.error('printTestPdf error:', error);
+  
+      console.error(
+        'printTestPdf error:',
+        error
+      );
   
       return res.status(500).send({
         error:
           error?.message ||
           'Cannot generate PDF',
       });
+  
     } finally {
+  
       if (browser) {
         await browser.close();
       }
+  
     }
   },
-
 
 
 
@@ -2064,7 +2155,11 @@ module.exports = {
       const { default: puppeteer } = await import('puppeteer');
   
       const chunkSize = 500;
-      const rowsPerPage = 13;
+  
+      // ตารางทั้งหมด 13 แถว
+      // 12 แถวแรก = Data
+      // แถวที่ 13 = TOTAL
+      const dataRowsPerPage = 12;
   
       const { filters } = req.body || {};
   
@@ -2177,7 +2272,7 @@ module.exports = {
       const receiveShipToMs = endOfDayMs(receiveShipDateTo);
   
       /* =====================================================
-         Load Box และ Group ข้อมูล
+         Load Box and Group
       ===================================================== */
   
       let lastId = null;
@@ -2189,7 +2284,7 @@ module.exports = {
           where: {
             status: 'use',
   
-            // เอาเฉพาะ Box ที่ยังไม่ถูก Receive
+            // เอาเฉพาะ Box ที่ยังไม่ Receive
             receiveId: null,
   
             ...(lastId
@@ -2228,11 +2323,6 @@ module.exports = {
   
         lastId = boxes[boxes.length - 1].id;
   
-        /*
-         * เนื่องจากเลือก receiveId: null
-         * ส่วนนี้ปกติจะได้ array ว่าง
-         * แต่เก็บไว้เพื่อรองรับ filter Receive เดิม
-         */
         const receiveIds = [
           ...new Set(
             boxes
@@ -2356,7 +2446,8 @@ module.exports = {
   
           if (
             boxState &&
-            normLower(row.boxState) !== normLower(boxState)
+            normLower(row.boxState) !==
+              normLower(boxState)
           ) {
             continue;
           }
@@ -2427,10 +2518,7 @@ module.exports = {
   
           const groupedRow = groupMap.get(groupKey);
   
-          // Sum QTY
           groupedRow.qty += row.qty;
-  
-          // Count BOX
           groupedRow.totalUnit += 1;
         }
   
@@ -2440,48 +2528,52 @@ module.exports = {
       }
   
       /* =====================================================
-         Sort และเตรียมข้อมูลสำหรับพิมพ์
+         Sort and Prepare Data
       ===================================================== */
   
       const printRows = Array.from(groupMap.values())
         .sort((a, b) => {
+  
           // 1. Control Lot
-          const byControlLot = norm(a.controlLot).localeCompare(
-            norm(b.controlLot),
-            undefined,
-            {
-              numeric: true,
-              sensitivity: 'base',
-            }
-          );
+          const byControlLot =
+            norm(a.controlLot).localeCompare(
+              norm(b.controlLot),
+              undefined,
+              {
+                numeric: true,
+                sensitivity: 'base',
+              }
+            );
   
           if (byControlLot !== 0) {
             return byControlLot;
           }
   
           // 2. Item Name
-          const byItemName = norm(a.itemName).localeCompare(
-            norm(b.itemName),
-            undefined,
-            {
-              numeric: true,
-              sensitivity: 'base',
-            }
-          );
+          const byItemName =
+            norm(a.itemName).localeCompare(
+              norm(b.itemName),
+              undefined,
+              {
+                numeric: true,
+                sensitivity: 'base',
+              }
+            );
   
           if (byItemName !== 0) {
             return byItemName;
           }
   
           // 3. Item No
-          const byItemNo = norm(a.itemNo).localeCompare(
-            norm(b.itemNo),
-            undefined,
-            {
-              numeric: true,
-              sensitivity: 'base',
-            }
-          );
+          const byItemNo =
+            norm(a.itemNo).localeCompare(
+              norm(b.itemNo),
+              undefined,
+              {
+                numeric: true,
+                sensitivity: 'base',
+              }
+            );
   
           if (byItemNo !== 0) {
             return byItemNo;
@@ -2500,32 +2592,32 @@ module.exports = {
         .map((groupedRow, index) => ({
           no: index + 1,
   
-          // Column P/O NO
+          // P/O NO
           poNo: groupedRow.dieNo,
   
-          // ถ้า Control Lot เป็น Normal ให้แสดงว่าง
+          // Normal อย่างเดียวให้เป็นช่องว่าง
           controlLot:
             normLower(groupedRow.controlLot) === 'normal'
               ? ''
               : groupedRow.controlLot,
   
-          // PART NO
           partNo: groupedRow.itemNo,
   
-          // PART NAME
           partName: groupedRow.itemName,
   
-          // QTY OUT
           qtyOut: groupedRow.qty,
   
           unit: 'PCS',
   
-          // จำนวน Box
-          totalUnit: `${groupedRow.totalUnit} BOX`,
+          // เก็บเป็น Number ไว้รวม TOTAL
+          totalUnit: groupedRow.totalUnit,
         }));
   
       /* =====================================================
-         แบ่งหน้าละ 13 แถว
+         Split Page
+  
+         Row 1-12 = Data
+         Row 13   = TOTAL
       ===================================================== */
   
       const pageGroups = [];
@@ -2533,45 +2625,67 @@ module.exports = {
       for (
         let index = 0;
         index < printRows.length;
-        index += rowsPerPage
+        index += dataRowsPerPage
       ) {
         pageGroups.push(
           printRows.slice(
             index,
-            index + rowsPerPage
+            index + dataRowsPerPage
           )
         );
       }
   
-      // กรณีไม่มีข้อมูล ให้สร้างเอกสารเปล่า 1 หน้า
       if (pageGroups.length === 0) {
         pageGroups.push([]);
       }
   
       /* =====================================================
-         สร้าง HTML แต่ละหน้า
+         Render Page
       ===================================================== */
   
       const renderPage = (rows) => {
-        const tableRowsHtml = Array.from({
-          length: rowsPerPage,
+  
+        /* ================================
+           Page TOTAL
+        ================================ */
+  
+        const pageTotalQty = rows.reduce(
+          (sum, row) =>
+            sum + Number(row.qtyOut || 0),
+          0
+        );
+  
+        const pageTotalBox = rows.reduce(
+          (sum, row) =>
+            sum + Number(row.totalUnit || 0),
+          0
+        );
+  
+        /* ================================
+           Data Rows 1-12
+        ================================ */
+  
+        const dataRowsHtml = Array.from({
+          length: dataRowsPerPage,
         })
           .map((_, rowIndex) => {
+  
             const row = rows[rowIndex];
   
             return `
               <tr>
-                <!-- 1: NO -->
+  
+                <!-- NO -->
                 <td>
                   ${row ? escapeHtml(row.no) : ''}
                 </td>
   
-                <!-- 2: P/O NO = Die No -->
+                <!-- P/O NO -->
                 <td>
                   ${row ? escapeHtml(row.poNo) : ''}
                 </td>
   
-                <!-- 3: Control Lot -->
+                <!-- CONTROL LOT -->
                 <td class="control-lot-cell">
                   ${
                     row
@@ -2580,7 +2694,7 @@ module.exports = {
                   }
                 </td>
   
-                <!-- 4: PART NO -->
+                <!-- PART NO -->
                 <td>
                   ${
                     row
@@ -2589,7 +2703,7 @@ module.exports = {
                   }
                 </td>
   
-                <!-- 5: PART NAME -->
+                <!-- PART NAME -->
                 <td>
                   ${
                     row
@@ -2598,7 +2712,7 @@ module.exports = {
                   }
                 </td>
   
-                <!-- 6: QTY OUT -->
+                <!-- QTY OUT -->
                 <td>
                   ${
                     row
@@ -2609,16 +2723,18 @@ module.exports = {
                   }
                 </td>
   
-                <!-- 7: UNIT -->
+                <!-- UNIT -->
                 <td>
                   ${row ? escapeHtml(row.unit) : ''}
                 </td>
   
-                <!-- 8: TOTAL UNIT -->
+                <!-- TOTAL UNIT -->
                 <td>
                   ${
                     row
-                      ? escapeHtml(row.totalUnit)
+                      ? escapeHtml(
+                          `${formatNumber(row.totalUnit)} BOX`
+                        )
                       : ''
                   }
                 </td>
@@ -2633,21 +2749,93 @@ module.exports = {
                 <td></td>
                 <td></td>
   
-                <!-- SIGNATURE COLUMNS -->
+                <!-- SIGNATURE -->
                 <td></td>
                 <td></td>
                 <td></td>
+  
               </tr>
             `;
           })
           .join('');
   
+        /* ================================
+           Row 13 = TOTAL
+        ================================ */
+  
+        const totalRowHtml = `
+          <tr class="total-row">
+  
+            <!-- NO -->
+            <td></td>
+  
+            <!-- P/O NO -->
+            <td></td>
+  
+            <!-- CONTROL LOT -->
+            <td></td>
+  
+            <!-- PART NO -->
+            <td></td>
+  
+            <!-- PART NAME -->
+            <td class="total-label">
+              TOTAL
+            </td>
+  
+            <!-- QTY OUT -->
+            <td class="total-value">
+              ${escapeHtml(
+                formatNumber(pageTotalQty)
+              )}
+            </td>
+  
+            <!-- UNIT -->
+            <td class="total-value">
+              PCS
+            </td>
+  
+            <!-- TOTAL UNIT -->
+            <td class="total-value">
+              ${escapeHtml(
+                formatNumber(pageTotalBox)
+              )} BOX
+            </td>
+  
+            <!-- RANDOM SAMPLING 1-8 -->
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+  
+            <!-- SIGNATURE -->
+            <td></td>
+            <td></td>
+            <td></td>
+  
+          </tr>
+        `;
+  
+        const tableRowsHtml =
+          dataRowsHtml + totalRowHtml;
+  
         return `
           <section class="page">
+  
+            <!-- =================================
+                 TITLE
+            ================================= -->
+  
             <div class="top">
+  
               <div></div>
   
               <div class="title">
+  
                 <div class="company">
                   NMB-Minebea Thai Ltd.
                 </div>
@@ -2663,9 +2851,11 @@ module.exports = {
                 <div class="division">
                   DIVISION................PRESS...................
                 </div>
+  
               </div>
   
               <div class="form-no">
+  
                 <div>
                   แบบฟอร์มที่&nbsp;&nbsp; 1
                 </div>
@@ -2673,12 +2863,21 @@ module.exports = {
                 <div>
                   FROM&nbsp;&nbsp; 1
                 </div>
+  
               </div>
+  
             </div>
   
+            <!-- =================================
+                 HEADER
+            ================================= -->
+  
             <div class="header-grid">
+  
               <table class="box-table">
+  
                 <tr>
+  
                   <th>
                     ชื่อเวนเดอร์
                     <br>
@@ -2690,18 +2889,23 @@ module.exports = {
                     <br>
                     VENDOR CODE
                   </th>
+  
                 </tr>
   
                 <tr>
+  
                   <td>
                     ${escapeHtml(vendor || '')}
                   </td>
   
                   <td></td>
+  
                 </tr>
+  
               </table>
   
               <table class="check-table">
+  
                 <tr>
                   <td>
                     <span class="check-box"></span>
@@ -2722,10 +2926,13 @@ module.exports = {
                     NIGHT SHIFT
                   </td>
                 </tr>
+  
               </table>
   
               <table class="box-table">
+  
                 <tr>
+  
                   <th>
                     รหัสสินค้า
                     <br>
@@ -2737,29 +2944,36 @@ module.exports = {
                     <br>
                     ITEM NO
                   </th>
+  
                 </tr>
   
                 <tr>
                   <td></td>
                   <td></td>
                 </tr>
+  
               </table>
   
               <table class="box-table">
+  
                 <tr>
+  
                   <th>
                     เลขที่รุ่น
                     <br>
                     MODEL NO
                   </th>
+  
                 </tr>
   
                 <tr>
                   <td></td>
                 </tr>
+  
               </table>
   
               <div class="right-info">
+  
                 <div>
                   เลขที่ (NO)&nbsp;&nbsp;
                   <span class="dot"></span>
@@ -2767,6 +2981,7 @@ module.exports = {
   
                 <div>
                   วันที่ (DATE)&nbsp;&nbsp;
+  
                   <span class="dot">
                     ${escapeHtml(
                       formatDateDDMMYYYY(
@@ -2780,12 +2995,21 @@ module.exports = {
                   เวลา (TIME)&nbsp;&nbsp;
                   <span class="dot"></span>
                 </div>
+  
               </div>
+  
             </div>
   
+            <!-- =================================
+                 MAIN TABLE
+            ================================= -->
+  
             <table class="main-table">
+  
               <thead>
+  
                 <tr>
+  
                   <th rowspan="2" class="no">
                     ลำดับที่
                     <br>
@@ -2864,9 +3088,11 @@ module.exports = {
                     <br>
                     GUARDMAN
                   </th>
+  
                 </tr>
   
                 <tr>
+  
                   <th class="sample">1</th>
                   <th class="sample">2</th>
                   <th class="sample">3</th>
@@ -2875,16 +3101,25 @@ module.exports = {
                   <th class="sample">6</th>
                   <th class="sample">7</th>
                   <th class="sample">8</th>
+  
                 </tr>
+  
               </thead>
   
               <tbody>
                 ${tableRowsHtml}
               </tbody>
+  
             </table>
   
+            <!-- =================================
+                 FOOTER
+            ================================= -->
+  
             <div class="footer">
+  
               <div class="note">
+  
                 <div>
                   ต้นฉบับ
                   &nbsp;&nbsp;&nbsp;&nbsp;
@@ -2908,9 +3143,11 @@ module.exports = {
                   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
                   NOT ALLOW TO DELETE OR CORRECT ANY DATA
                 </div>
+  
               </div>
   
               <div class="approve">
+  
                 <div>
                   อนุมัติโดย
                   &nbsp;&nbsp;
@@ -2931,31 +3168,42 @@ module.exports = {
                   :
                   ....................................................
                 </div>
+  
               </div>
+  
             </div>
   
             <div class="code">
               M2-4239A4
             </div>
+  
           </section>
         `;
       };
+  
+      /* =====================================================
+         Render Pages
+      ===================================================== */
   
       const pagesHtml = pageGroups
         .map((rows) => renderPage(rows))
         .join('');
   
       /* =====================================================
-         Full HTML
+         HTML
       ===================================================== */
   
       const html = `
         <!DOCTYPE html>
+  
         <html>
+  
         <head>
+  
           <meta charset="UTF-8" />
   
           <style>
+  
             @page {
               size: A4 landscape;
               margin: 8mm;
@@ -2984,6 +3232,7 @@ module.exports = {
             .page {
               width: 100%;
               min-height: 190mm;
+  
               position: relative;
   
               break-after: page;
@@ -2997,14 +3246,20 @@ module.exports = {
   
             .top {
               display: grid;
-              grid-template-columns: 1fr 2fr 1fr;
+  
+              grid-template-columns:
+                1fr 2fr 1fr;
+  
               align-items: start;
+  
               margin-bottom: 14px;
             }
   
             .title {
               text-align: center;
+  
               font-weight: bold;
+  
               line-height: 1.45;
             }
   
@@ -3027,8 +3282,11 @@ module.exports = {
   
             .form-no {
               text-align: right;
+  
               line-height: 2.3;
+  
               font-size: 12px;
+  
               padding-top: 8px;
             }
   
@@ -3043,7 +3301,9 @@ module.exports = {
                 2.2fr;
   
               gap: 26px;
+  
               align-items: start;
+  
               margin-bottom: 16px;
             }
   
@@ -3055,8 +3315,11 @@ module.exports = {
             .box-table td,
             .box-table th {
               border: 1px solid #444;
+  
               height: 34px;
+  
               text-align: center;
+  
               vertical-align: middle;
             }
   
@@ -3067,31 +3330,42 @@ module.exports = {
   
             .check-table td {
               border: 1px solid #444;
+  
               height: 26px;
+  
               padding: 2px 8px;
             }
   
             .check-box {
               display: inline-block;
+  
               width: 22px;
               height: 20px;
+  
               border: 1px solid #444;
+  
               margin-right: 22px;
+  
               vertical-align: middle;
             }
   
             .right-info {
               line-height: 3.3;
+  
               font-size: 13px;
+  
               white-space: nowrap;
             }
   
             .dot {
               display: inline-block;
+  
               border-bottom: 1px dotted #555;
+  
               width: 165px;
               height: 18px;
               line-height: 18px;
+  
               text-align: center;
             }
   
@@ -3102,28 +3376,55 @@ module.exports = {
             .main-table th,
             .main-table td {
               border: 1px solid #444;
+  
               text-align: center;
+  
               vertical-align: middle;
             }
   
             .main-table th {
               height: 34px;
+  
               font-weight: normal;
+  
               line-height: 1.35;
+  
               font-size: 11px;
             }
   
             .main-table td {
               height: 26px;
+  
               padding: 1px 3px;
+  
               font-size: 10px;
+  
               overflow-wrap: anywhere;
+  
               word-break: break-word;
             }
   
             .main-table td.control-lot-cell {
               font-size: 9px;
               line-height: 1.1;
+            }
+  
+            /* =========================
+               TOTAL ROW
+            ========================= */
+  
+            .main-table tr.total-row td {
+              font-weight: bold;
+              font-size: 10px;
+            }
+  
+            .main-table td.total-label {
+              text-align: right;
+              padding-right: 8px;
+            }
+  
+            .main-table td.total-value {
+              font-weight: bold;
             }
   
             .main-table .no {
@@ -3168,8 +3469,12 @@ module.exports = {
   
             .footer {
               display: grid;
-              grid-template-columns: 1fr 1fr;
+  
+              grid-template-columns:
+                1fr 1fr;
+  
               margin-top: 10px;
+  
               font-size: 13px;
             }
   
@@ -3179,7 +3484,9 @@ module.exports = {
   
             .approve {
               justify-self: end;
+  
               width: 310px;
+  
               line-height: 2.4;
             }
   
@@ -3189,16 +3496,21 @@ module.exports = {
   
             .code {
               position: absolute;
+  
               right: 0;
               bottom: -1px;
+  
               font-size: 9px;
             }
+  
           </style>
+  
         </head>
   
         <body>
           ${pagesHtml}
         </body>
+  
         </html>
       `;
   
@@ -3229,9 +3541,13 @@ module.exports = {
   
       const pdfBuffer = await page.pdf({
         format: 'A4',
+  
         landscape: true,
+  
         printBackground: true,
+  
         preferCSSPageSize: true,
+  
         scale: 0.92,
   
         margin: {
@@ -3243,10 +3559,11 @@ module.exports = {
       });
   
       /* =====================================================
-         Download filename
+         Download Filename
       ===================================================== */
   
       const now = new Date();
+  
       const pad = (number) =>
         String(number).padStart(2, '0');
   
@@ -3277,18 +3594,26 @@ module.exports = {
       );
   
       return res.send(pdfBuffer);
+  
     } catch (error) {
-      console.error('downloadPdf error:', error);
+  
+      console.error(
+        'downloadPdf error:',
+        error
+      );
   
       return res.status(500).send({
         error:
           error?.message ||
           'Cannot generate PDF',
       });
+  
     } finally {
+  
       if (browser) {
         await browser.close();
       }
+  
     }
   }
 
