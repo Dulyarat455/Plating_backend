@@ -15,7 +15,7 @@ dotenv.config();
 
 const allowedOrigins = [
      // 'http://localhost:4200',
-     'http://10.121.51.100:4200', // 👈 ใส่ IP เครื่อง Server notebook
+     'http://10.121.50.245:4200', // 👈 ใส่ IP เครื่อง Server notebook
    // 'http://10.121.1.85'// เครื่อง server จริง
   
   ];
@@ -75,7 +75,7 @@ const vendorController = require("./controllers/VendorController");
 const issueController = require("./controllers/IssueController");
 const receiveController = require("./controllers/ReceiveController");
 const reportController = require('./controllers/ReportController');
-
+const masterPalletController = require('./controllers/MasterPallet');
 
 
 
@@ -175,6 +175,19 @@ app.post('/api/report/exportExcel',(req,res)=> reportController.exportExcel(req,
 
 app.post('/api/report/printTestPdf',(req,res)=> reportController.printTestPdf(req,res));
 app.post('/api/report/downloadPdf',(req,res)=> reportController.downloadPdf(req,res));
+
+
+
+//Master Pallet
+
+app.get('/api/masterPallet/fetchIssue',(req,res)=> masterPalletController.fetchIssue(req,res));
+app.get('/api/masterPallet/fetchReceive',(req,res)=> masterPalletController.fetchRecive(req,res));
+
+app.post('/api/masterPallet/editFieldMasterIssue',(req,res)=> masterPalletController.editFieldMasterIssue(req,res));
+app.post('/api/masterPallet/editFieldMasterReceive',(req,res)=> masterPalletController.editFieldMasterReceive(req,res));
+
+
+
 
 
 
